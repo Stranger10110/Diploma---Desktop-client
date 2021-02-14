@@ -192,6 +192,16 @@ class SyncFolder2:
         thread.start()
         return thread
 
+    @staticmethod
+    def start_process(target, *args, daemon=False):
+        process = mp.Process(
+                target=target,
+                args=args,
+                daemon=daemon
+        )
+        process.start()
+        return process
+
     def send_file(self, filepath, ip, port, buffer_size=-1):
         with open(filepath, 'rb', buffering=buffer_size) as file:
             self.current_filesize = os.fstat(file.fileno()).st_size
@@ -326,139 +336,6 @@ class SyncFolder2:
             control_flags.release()
             control.unlink()
             _bytes.unlink()
-
-    def threaded_tcp_sending(self, ip, port, n_threads):
-        def no_connection():
-            print("No connection to server!")
-            self._send_start_time = time.time()
-            self._sent_bytes = 0
-
-        _bytes = shared_memory.SharedMemory(name='tcp_bytes', size=self.max_ram)
-        tcp_bytes = _bytes.buf[:self.max_ram].cast('B')
-
-        control = shared_memory.SharedMemory(name='control_flags', size=2)  # tcp, file
-        control_flags = control.buf[:2].cast('B')
-
-        addr = (ip, port)
-        print(addr)
-        with sock.socket(sock.AF_INET, sock.SOCK_STREAM, sock.IPPROTO_TCP) as tcp_socket:
-            # tcp_socket.settimeout(10)
-            try:
-                print("connecting...")
-                tcp_socket.connect(addr)
-            except ConnectionRefusedError:
-                no_connection()
-                return
-            except TimeoutError:
-                no_connection()
-                return
-            print('sending...')
-
-            if self.max_ram == self.current_filesize:
-                cs = self.current_filesize + 1
-            else:
-                cs = self.current_filesize
-            r = range(self.max_ram, cs, self.max_ram)
-
-            step = int(self.max_ram / n_threads)
-            se = list()
-            for i in range(n_threads):
-                thread_start = step * i
-                thread_end = thread_start + step
-                se.append((thread_start, thread_end))
-            last_bytes = self.current_filesize - r[-1]
-
-            # sending info
-            tcp_socket.sendall(struct.pack('>q', step))  # buffer size
-            tcp_socket.sendall(struct.pack('>q', self.current_filesize))  # '>q' is long long (8 bytes == 64 bits)
-            tcp_socket.sendall(struct.pack('>q', last_bytes))
-
-            _sent_bytes = 0
-            _send_start_time = time.time()
-
-            sockets = [tcp_socket]
-            for i in range(1, n_threads):
-                addr = (ip, port + i)
-                print(addr)
-                # s = sock.socket(sock.AF_INET, sock.SOCK_STREAM, sock.IPPROTO_TCP)
-                # s.connect(addr)
-                # sockets.append(s)
-                while 1:
-                    try:
-                        s = sock.socket(sock.AF_INET, sock.SOCK_STREAM, sock.IPPROTO_TCP)
-                        s.connect(addr)
-                        sockets.append(s)
-                        break
-                    except ConnectionRefusedError:
-                        continue
-                    except TimeoutError:
-                        continue
-
-            def _send_tcp(n, start, end):
-                count = 0
-                # tcp_flag, file_flag = self._read_control_values(control_flags)
-                while control_flags[0] != control_flags[1]:
-                    time.sleep(0.0005)  # 500 microseconds
-
-                # print(self.file_flag.value)
-                # print(bytes(tcp_bytes[:]))
-                if not tcp_bytes[start:end]:
-                    return 0
-
-                while count < end:
-                    v = sockets[n].send(tcp_bytes[start:end])
-                    count += v
-                    # print(v)
-
-                return count
-
-            threads = [threading.Thread()] * n_threads
-            for _ in r:
-                for j in range(n_threads):
-                    threads[j] = self.start_thread(_send_tcp, j, se[j][0], se[j][1])
-                for t in threads:
-                    t.join()
-                _sent_bytes += step
-                control_flags[0] += 1
-
-                t = time.time() - _send_start_time
-                sent = _sent_bytes / 1048576
-                print(f'Sending time: {t} seconds ({sent} MB).   Speed: {sent / t} MB/s', end='\r')
-
-            if not (self.max_ram == self.current_filesize):
-                try:
-                    threads = list()
-                    for _ in r:
-                        for j in range(n_threads):
-                            start_ = step * j
-                            threads.append(self.start_thread(_send_tcp, j, start_, start_ + step))
-                        for t in threads:
-                            t.join()
-                    _send_tcp(0, self.current_filesize - last_bytes, self.current_filesize)
-                    _sent_bytes += last_bytes
-                except ConnectionResetError:  # file is fully sent
-                    pass
-                finally:
-                    control_flags[0] += 1
-
-            t = time.time() - _send_start_time
-            sent = _sent_bytes / 1048576
-            print(f'Sending time: {t} seconds ({sent} MB).   Speed: {sent / t} MB/s', end='\r')
-
-            tcp_bytes.release()
-            control_flags.release()
-            control.unlink()
-            _bytes.unlink()
-
-    @staticmethod
-    def start_process(target, *args, daemon=False):
-        process = mp.Process(
-            target=target,
-            args=args,
-            daemon=daemon
-        )
-        process.start()
-        return process
 
 
 def main():
