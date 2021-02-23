@@ -241,13 +241,16 @@ class SyncFolder2:
 
             try:
                 left_bytes = self.current_filesize - r[-1]
-                _read(left_bytes)
             except IndexError: # current_filesize == max_ram
-                pass
+                left_bytes = self.current_filesize - self.max_ram
+            if left_bytes:
+                _read(left_bytes)
 
             # tcp_flag, file_flag = self._read_control_values(control_flags)
             while control_flags[0] != (control_flags[1] + 1):
                 time.sleep(0.0005)
+            if (self.current_filesize % 2) != 0:
+                control_flags[1] += 1
 
             tcp_bytes.release()
             control_flags.release()
@@ -327,6 +330,10 @@ class SyncFolder2:
                     pass
                 finally:
                     control_flags[0] += 1
+
+            if (self.current_filesize % 2) != 0:
+                time.sleep(0.1)
+                control_flags[0] += 1
 
             t = time.time() - _send_start_time
             sent = _sent_bytes / 1048576
