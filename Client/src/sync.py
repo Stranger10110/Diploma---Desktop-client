@@ -69,19 +69,20 @@ class Sync:
             if not recursive:
                 break
 
-    @staticmethod
-    def _set_common(url, c):
-        c.setopt(pycurl.FOLLOWLOCATION, 1)
-        c.setopt(pycurl.AUTOREFERER, 1)
-        c.setopt(pycurl.ENCODING, "gzip, deflate")
-        c.setopt(pycurl.MAXREDIRS, 255)
-        c.setopt(pycurl.CONNECTTIMEOUT, 30)
-        c.setopt(pycurl.TIMEOUT, 300)
-        c.setopt(pycurl.NOSIGNAL, 1)
-        if url[:5] == 'https':
-            c.setopt(pycurl.SSLVERSION, 3)
-            c.setopt(pycurl.SSL_VERIFYPEER, 0)
+    def sync_folder_listing(self, api, full_folder_path, base_path):
+        base_path = base_path.replace('\\', '/')
+        full_folder_path = full_folder_path.replace('\\', '/')
+        rel_path = self.remove_prefix(full_folder_path, f'{base_path}/')
 
+        # remote_files = list()
+        remote_files = dict()
+        r, listing = api.filer_get_folder_listing(rel_path, recursive=True)
+        for entry in listing:
+            if entry['Mode'] <= 9999:  # is a file
+                path = self.remove_prefix(entry['FullPath'], f'/{api.username}/')
+                # entry['FullPath_2'] = path
+                # remote_files.append(path)
+                remote_files[path] = entry
 
         local_files = set()
         for dir_path, folders, filenames in os.walk(full_folder_path):
@@ -90,65 +91,24 @@ class Sync:
             for file in filenames:
                 local_files.add(f'{rel_path}/{file}')
 
+        # for test
+        t = local_files.pop(6)
+        t2 = local_files.pop(9)
 
-def create_json_from_files(paths):
-    result = dict()
+        # # #
+        local_only = [l for l in local_files if l not in remote_files.keys()]
 
-    for path in paths:
-        path = norm_path(path)
+        remote_only = [r for r in remote_files.keys() if r not in local_files]
+        # remote_only_full = [r for path, r in remote_files.items() if path not in local_files]
+        remote_only_entries = [remote_files[r] for r in remote_only]
 
-        split = path.split('/')
-        dirs = split[:-1]
-        file = split[-1]
+        # contains_both = local_files if len(local_files) <= len(remote_files) else list(remote_files.keys())
+        both = [entry for path, entry in remote_files.items() if path not in remote_only + local_only]
+        for b in both:
+            os.path.getmtime(path)
 
-        for d in dirs.split('/'):
-            if result.get(d, None) is None:
-                result = list()
+        #       local paths,            remote entries,      remote entries presented locally
+        return (base_path, local_only), remote_only_entries, both
 
-
-# if __name__ == '__main__':
-#     s = requests.Session()
-#
-#     # domain = "https://mgtu-diploma.tk"
-#     domain = "c4d0bdc3f23368.localhost.run"
-#
-#     register = {"username": "test2", "password": "4321", "email": "test2_email"}
-#     # r = s.post(f"https://{domain}/api/register", json=register)
-#     # print(r.json())
-#
-#     # confirm = {"username": "test2", 'code': 'leramuradelasotusapo'}
-#     # r = s.post(f"https://{domain}/api/confirm_username", json=confirm)
-#     # print(r.text)
-#
-#     r = s.post(f"https://{domain}/api/login", json=register)
-#     print(r.text)
-#
-#     # s.headers['Auth-Expiry'] = r.headers['Auth-Expiry']
-#     try:
-#         s.headers['X-Auth-Token'] = r.headers['X-Auth-Token']
-#         s.headers['X-Refresh-Token'] = r.headers['X-Refresh-Token']
-#         s.headers['X-Csrf-Token'] = r.headers['X-Csrf-Token']
-#     except Exception:
-#         print("jwt error")
-#
-#     r = s.get(f"https://{domain}/api/restricted_hello")
-#     print(r.text)
-#
-#
-#     websocket = create_connection(f"wss://{domain}/api/sync_files", header=dict(s.headers))
-#
-#     # sync2 = SyncFolder2(10) # MB
-#     # sync2.send_file(r"D:\Torrents\Microsoft Office 2019 Professional Plus 16.0.12624.20466 (2020.04) (x64)\Microsoft.Office.2016-2019x64.v2020.04.iso",
-#     #                 None, None, socket=conn)
-#
-#
-#     f = r"H:\Downloads\0001-0065.avi"
-#
-#     files_data = {"filenames": [norm_path(f, r'H:\Downloads')]}
-#     json_str = json.dumps(files_data)
-#     websocket.send(json_str)
-#
-#     # send_file(websocket.sock, f, int(10 * 1024 * 512))
-#     with open(f, 'rb') as file:
-#         websocket.sock.sendfile(file)
-#     print(SyncFolder.file_md5(f))
+    def sync_file(self):
+        pass
