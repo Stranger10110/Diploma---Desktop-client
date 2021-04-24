@@ -1,41 +1,8 @@
 import hashlib
 import os
 import struct
-#import aiofiles
-from time import sleep
 
-import pycurl
-import httputils
-
-
-class FileReader:
-    def __init__(self, fp):
-        self.fp = fp
-
-    def read_callback(self, size=3_145_728):
-        return self.fp.read(size)
-
-
-class ResponseLine(object):
-    """HTTP response line container.
-    Attributes:
-        version: HTTP version as a float.
-        code:    HTTP Response code as an int.
-        reason:    HTTP response reason.
-    """
-    __slots__ = ["version", "code", "reason"]
-    def __init__(self, version, code, reason):
-        self.version = version
-        self.code = code
-        self.reason = reason
-
-    def __str__(self):
-        return "%s %s" % (self.code, self.reason)
-
-    # evaluates true on good response
-    def __nonzero__(self):
-        return self.code == 200
-    __bool__ = __nonzero__
+from src.rdiff import Rdiff
 
 
 class Sync:
@@ -56,22 +23,12 @@ class Sync:
             tcp_socket.sendfile(binf)
 
     @staticmethod
-    async def async_file_reader(file_name, buff_size_mb=3_145_728):
-        async with aiofiles.open(file_name, 'rb') as f:
-            chunk = await f.read(buff_size_mb)
-            while chunk:
-                yield chunk
-                chunk = await f.read(buff_size_mb)
-
-    @staticmethod
     def chunk_file_reader(filepath, buff_size_mb=3_145_728):
-        #def gen():
         with open(filepath, 'rb') as f:
             chunk = f.read(buff_size_mb)
             while chunk:
                 yield chunk
                 chunk = f.read(buff_size_mb)
-        #return os.path.getsize(filepath), gen()
 
     @staticmethod
     def remove_prefix(text, prefix):
@@ -79,8 +36,7 @@ class Sync:
             return text[len(prefix):]
         return text  # or whatever
 
-    # TODO: receive file hash back for confirmation
-    def sync_folder(self, root_dir, base_path, ws, tcp_socket):
+    def upload_folder(self, root_dir, base_path, ws, tcp_socket, recursive=True):
         root_dir = root_dir.replace('\\', '/')
         root_dir = root_dir[:-1] if root_dir[-1] == '/' else root_dir
         base_path = base_path.replace('\\', '/')
@@ -105,29 +61,13 @@ class Sync:
                     return
 
                 ws.send(fi)
-                filepath = f"{root_dir}/{fi}"
+                filepath = f"{dir_path}/{fi}"
                 self.send_file(tcp_socket, filepath)
 
                 print(fi, self.file_md5(filepath))
 
-    def get_raw_poster(self, url, filepath, headers, header_callback):
-        """Initialze a Curl object for a single POST request.
-        This sends whatever data you give it, without specifying the content
-        type.
-        Returns a tuple of initialized Curl and HTTPResponse objects.
-        """
-        filesize = os.path.getsize(filepath)
-        headers.append(f'Content-Length: {str(filesize)}')
-        c = pycurl.Curl()
-        c.setopt(c.URL, url)
-        c.setopt(pycurl.POST, 1)
-        c.setopt(c.READFUNCTION, FileReader(open(filepath, 'rb')).read_callback)
-        c.setopt(c.POSTFIELDSIZE, filesize)
-        c.setopt(pycurl.CUSTOMREQUEST, 'POST')
-        c.setopt(c.HEADERFUNCTION, header_callback)
-        c.setopt(c.HTTPHEADER, headers)
-        self._set_common(url, c)
-        return c
+            if not recursive:
+                break
 
     @staticmethod
     def _set_common(url, c):
@@ -143,10 +83,12 @@ class Sync:
             c.setopt(pycurl.SSL_VERIFYPEER, 0)
 
 
-# def norm_path(path):
-#     path = path[1:].replace('\\', '/')
-#     # path = path.split(':')[1:][0][1:]
-#     return path
+        local_files = set()
+        for dir_path, folders, filenames in os.walk(full_folder_path):
+            dir_path = dir_path.replace('\\', '/')
+            rel_path = self.remove_prefix(dir_path, f'{base_path}/')
+            for file in filenames:
+                local_files.add(f'{rel_path}/{file}')
 
 
 def create_json_from_files(paths):
