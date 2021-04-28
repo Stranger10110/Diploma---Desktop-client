@@ -1,4 +1,7 @@
+import os
 from ctypes import CDLL, c_char_p, c_int
+from pathlib import Path
+from sys import getdefaultencoding
 
 
 class Rdiff:
@@ -11,21 +14,87 @@ class Rdiff:
     """
     def __init__(self, dll_path):
         self.rsync = CDLL(dll_path)
+
+        types = (c_int, c_int, c_int, c_char_p)
+        self.rsync.rdiff_sig.argtypes = types[1:]
+        self.rsync.rdiff_delta.argtypes = types
+        self.rsync.rdiff_patch.argtypes = types
+
         self.rsync.rdiff_set_params(c_int(0), c_int(0), c_int(1), c_int(1))
 
-    def signature(self, filepath, sig_path):
-        basis = c_char_p(bytes(filepath))
-        sig = c_char_p(bytes(sig_path))
-        return self.rsync.rdiff_sig(basis, sig)
+    def signature(self, filepath, sig_path, sig_mode='wb'):
+        basis_file = open(filepath, 'rb')
+        basis_fd = basis_file.fileno()
 
-    def delta(self, sig_path, new_filepath, delta_path):
-        sig = c_char_p(bytes(sig_path))
-        new = c_char_p(bytes(new_filepath))
-        delta = c_char_p(bytes(delta_path))
-        return self.rsync.rdiff_delta(sig, new, delta)
+        Path(os.path.dirname(sig_path)).mkdir(parents=True, exist_ok=True)
+        sig_file = open(sig_path, sig_mode)
+        sig_fd = sig_file.fileno()
+        sig_mode_ = bytes(sig_mode, encoding=getdefaultencoding())
 
-    def patch(self, filepath, delta_path, new_filepath):
-        basis = c_char_p(bytes(filepath))
-        delta = c_char_p(bytes(delta_path))
-        new = c_char_p(bytes(new_filepath))
-        return self.rsync.rdiff_patch(basis, delta, new)
+        res = self.rsync.rdiff_sig(basis_fd, sig_fd, sig_mode_)
+        if res != 0:
+            basis_file.close()
+            sig_file.close()
+        return res
+
+    # def signature_2(self, filepath, sig_fd, sig_mode='wb'):
+    #     basis_file = open(filepath, 'rb')
+    #     basis_fd = basis_file.fileno()
+    #
+    #     sig_mode_ = bytes(sig_mode, encoding=getdefaultencoding())
+    #
+    #     res = self.rsync.rdiff_sig(basis_fd, sig_fd, sig_mode_)
+    #     if res != 0:
+    #         basis_file.close()
+    #     return res
+
+    def delta(self, sig_path, new_filepath, delta_path, delta_mode='wb'):
+        sig_file = open(sig_path, 'rb')
+        sig_fd = sig_file.fileno()
+
+        new_file = open(new_filepath, 'rb')
+        new_fd = new_file.fileno()
+
+        Path(os.path.dirname(delta_path)).mkdir(parents=True, exist_ok=True)
+        delta_file = open(delta_path, delta_mode)
+        delta_fd = delta_file.fileno()
+        delta_mode_ = bytes(delta_mode, encoding=getdefaultencoding())
+
+        res = self.rsync.rdiff_delta(sig_fd, new_fd, delta_fd, delta_mode_)
+        if res != 0:
+            sig_file.close()
+            new_file.close()
+            delta_file.close()
+        return res
+
+    def patch(self, filepath, delta_path, new_filepath, new_mode='wb'):
+        basis_file = open(filepath, 'rb')
+        basis_fd = basis_file.fileno()
+
+        delta_file = open(delta_path, 'rb')
+        delta_fd = delta_file.fileno()
+
+        Path(os.path.dirname(new_filepath)).mkdir(parents=True, exist_ok=True)
+        new_file = open(new_filepath, new_mode)
+        new_fd = new_file.fileno()
+        new_mode_ = bytes(new_mode, encoding=getdefaultencoding())
+
+        res = self.rsync.rdiff_patch(basis_fd, delta_fd, new_fd, new_mode_)
+        if res != 0:
+            basis_file.close()
+            delta_file.close()
+            new_file.close()
+        return res
+
+
+def main():
+    a = "C:/Content/VUS/Efremov/TA/3_4_kurs/Platform_designer_lab/заметки.txt"
+    b = "C:/Content/VUS/Efremov/TA/3_4_kurs/Platform_designer_lab/заметки.txt.sig"
+    rdiff = Rdiff("./rsync")
+    # print(rdiff.signature(a, b))
+    print(rdiff.patch(a, r"C:\Users\Nikita\Desktop\заметки.txt.delta.v1",
+                      r"C:\Users\Nikita\Desktop\заметки_old.txt"))
+
+
+if __name__ == '__main__':
+    main()
