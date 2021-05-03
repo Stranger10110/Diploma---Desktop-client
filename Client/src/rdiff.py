@@ -37,17 +37,6 @@ class Rdiff:
             sig_file.close()
         return res
 
-    # def signature_2(self, filepath, sig_fd, sig_mode='wb'):
-    #     basis_file = open(filepath, 'rb')
-    #     basis_fd = basis_file.fileno()
-    #
-    #     sig_mode_ = bytes(sig_mode, encoding=getdefaultencoding())
-    #
-    #     res = self.rsync.rdiff_sig(basis_fd, sig_fd, sig_mode_)
-    #     if res != 0:
-    #         basis_file.close()
-    #     return res
-
     def delta(self, sig_path, new_filepath, delta_path, delta_mode='wb'):
         sig_file = open(sig_path, 'rb')
         sig_fd = sig_file.fileno()
@@ -92,8 +81,10 @@ def main():
     b = "C:/Content/VUS/Efremov/TA/3_4_kurs/Platform_designer_lab/заметки.txt.sig"
     rdiff = Rdiff("./rsync")
     # print(rdiff.signature(a, b))
-    print(rdiff.patch(a, r"C:\Users\Nikita\Desktop\заметки.txt.delta.v1",
-                      r"C:\Users\Nikita\Desktop\заметки_old.txt"))
+    print(rdiff.patch(a, r"C:\Users\Nikita\Desktop\заметки.txt.delta.v2",
+                      r"C:\Users\Nikita\Desktop\заметки_v1.txt"))
+    print(rdiff.patch(r"C:\Users\Nikita\Desktop\заметки_v1.txt", r"C:\Users\Nikita\Desktop\заметки.txt.delta.v1",
+                      r"C:\Users\Nikita\Desktop\заметки_v0.txt"))
 
 
 if __name__ == '__main__':
