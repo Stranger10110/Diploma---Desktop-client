@@ -1,6 +1,7 @@
 import concurrent.futures
 import mimetypes
 import os
+from urllib.parse import urlencode
 from base64 import b64encode
 from concurrent.futures.thread import ThreadPoolExecutor
 from json import dumps as json_dumps
@@ -230,53 +231,53 @@ class API:
         return r
 
     @request
-    def ws_upload_file(self, filepath, full_remote_path, sync_obj: Sync):
+    def ws_upload_file(self, filepath, remote_path, sync_obj: Sync):
         ws, tcp_socket, ok = self._ws_make_connection('api/upload_file')
         if not ok:
             return CustomResponse(ws.status, "Could not create ws socket!", ws.headers)
 
-        if sync_obj.upload_file(filepath, full_remote_path, ws, tcp_socket):
+        if sync_obj.upload_file(filepath, remote_path, ws, tcp_socket):
             return CustomResponse(200, f"{filepath} - file uploaded!", ws.headers)
         else:
             return CustomResponse(400, f"Could not upload {filepath}!", ws.headers)
 
     @request
-    def ws_make_version_delta(self, filepath, full_remote_path, sync_obj: Sync):
+    def ws_make_version_delta(self, filepath, remote_path, sync_obj: Sync):
         ws, tcp_socket, ok = self._ws_make_connection('api/make_version_delta')
         if not ok:
             return CustomResponse(ws.status, "Could not create ws socket!", ws.headers)
 
-        if sync_obj.upload_file(filepath, full_remote_path, ws, tcp_socket):
+        if sync_obj.upload_file(filepath, remote_path, ws, tcp_socket):
             if ws.recv() == 'stop':
                 return CustomResponse(200, f"{filepath} - new file version created!", ws.headers)
             else:
-                return CustomResponse(400, f"Could not create new file version (delta) ({full_remote_path})!", ws.headers)
+                return CustomResponse(400, f"Could not create new file version (delta) ({remote_path})!", ws.headers)
         else:
             return CustomResponse(400, f"Could not upload {filepath}!", ws.headers)
 
     @request
-    def ws_upload_new_file_version(self, filepath, full_remote_path, sync_obj: Sync):
+    def ws_upload_new_file_version(self, filepath, remote_path, sync_obj: Sync):
         ws, tcp_socket, ok = self._ws_make_connection('api/upload_new_file_version')
         if not ok:
             return CustomResponse(ws.status, "Could not create ws socket!", ws.headers)
 
-        if sync_obj.upload_file(filepath, full_remote_path, ws, tcp_socket):
+        if sync_obj.upload_file(filepath, remote_path, ws, tcp_socket):
             if ws.recv() == 'stop':
                 return CustomResponse(200, f"{filepath} - new file version uploaded!", ws.headers)
             else:
-                return CustomResponse(400, f"Could not upload new file version ({full_remote_path})!", ws.headers)
+                return CustomResponse(400, f"Could not upload new file version ({remote_path})!", ws.headers)
         else:
             return CustomResponse(400, f"Could not upload {filepath}!", ws.headers)
 
     @request
-    def ws_download_new_file_version(self, filepath, full_remote_path, sync_obj: Sync):
+    def ws_download_new_file_version(self, filepath, remote_path, sync_obj: Sync):
         ws, tcp_socket, ok = self._ws_make_connection('api/download_new_file_version')
         if not ok:
             return CustomResponse(ws.status, "Could not create ws socket!", ws.headers)
 
-        if sync_obj.upload_file(filepath, full_remote_path, ws, tcp_socket):
+        if sync_obj.upload_file(filepath, remote_path, ws, tcp_socket):
             ws.send('next')
-            delta_path = f'{sync_obj.temp_dir.name}/{full_remote_path}.delta'
+            delta_path = f'{sync_obj.temp_dir.name}/{remote_path}.delta'
             sync_obj.receive_file(tcp_socket, delta_path)
             return CustomResponse(200, f"{filepath} - new file version uploaded!", ws.headers), delta_path
         else:
@@ -302,7 +303,7 @@ class API:
         url = f"{self.protocol}://{self.host}/secure_share/{link}"
         return self._download_file(url, filename)
 
-    # Filer path: '' == /username; 'path' == /username/path
+    # Filer path: '' == '/username'; 'path' == '/username/path'
 
     @request
     def filer_upload_folder(self, full_folder_path: str, base_path: str, filer_params=None, nthreads=10,
@@ -329,7 +330,7 @@ class API:
         self._remove_upload_headers()
         return results
 
-    @retry(stop=stop_after_attempt(3)) # TODO: remove or modify retry logic; retry uploading from last uploaded chunk
+    # @retry(stop=stop_after_attempt(3)) # TODO: remove or modify retry logic; retry uploading from last uploaded chunk
     def filer_upload_file(self, filename, dir_path, rel_path,
                           filer_params=None, remote_filename=None, read_size=3_145_728):
         if filer_params is None:
@@ -341,20 +342,20 @@ class API:
             return CustomResponse(205, "Zero size file", self.session.headers)
         if remote_filename is not None:
             filename = remote_filename
+        filename = self._check_filer_file_path(filename)
 
         mimetype = mimetypes.guess_type(filepath)[0] or '' # TODO: make docx mime shorter
         m = MultipartEncoder(fields={'f': (None, open(filepath, 'rb'), mimetype)})
         m._read = m.read
         m.read = lambda size: m._read(read_size if filesize >= read_size else filesize)
 
-        if rel_path != '':
-            rel_path += '/'
-        self._filer_set_json_header(f"{rel_path}{filename}", filer_params)
         headers = self.session.headers.copy()
         headers['Content-Type'] = m.content_type
         headers['Content-Length'] = str(filesize)
 
-        r = requests.post(f"{self.protocol}://{self.host}/api/filer", data=m, headers=headers, allow_redirects=True)
+        rel_path = self._check_filer_folder_path(rel_path)
+        r = requests.post(f"{self.protocol}://{self.host}/api/filer/{rel_path}{filename}?{urlencode(filer_params)}",
+                          data=m, headers=headers, allow_redirects=True)
         self.session.headers = r.headers
 
         return r
@@ -375,17 +376,17 @@ class API:
         self.filer_upload_file(filename, dir_path, rel_path, filer_params, remote_filename, read_size)
 
     @request
-    def filer_download_file(self, full_remote_path, local_folder_path, filer_params=None):
+    def filer_download_file(self, remote_path, local_folder_path, filer_params=None):
         if filer_params is None:
             filer_params = dict()
-        self._filer_set_json_header(self._check_filer_file_path(full_remote_path), filer_params)
-        url = f"{self.protocol}://{self.host}/api/filer"
+        url = f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}" \
+              f"?{urlencode(filer_params)}"
 
-        filepath = f'{local_folder_path}/{full_remote_path}'
+        filepath = f'{local_folder_path}/{remote_path}'
         return self._download_file(url, filepath, self.session.headers), filepath
 
     @request
-    def filer_get_folder_listing(self, full_remote_path: str, recursive: bool, filer_params=None, result=None):
+    def filer_get_folder_listing(self, remote_path: str, recursive: bool, filer_params=None, result=None):
         if result is None:
             result = list()
             self.session.headers["Accept"] = "application/json"
@@ -396,9 +397,9 @@ class API:
                 recursive = False
         json_ = {'limit': '100000'} # 'pretty': 'y'
         json_.update(filer_params)
-        self._filer_set_json_header(self._check_filer_folder_path(full_remote_path), json_)
 
-        r = self.session.get(f"{self.protocol}://{self.host}/api/filer")
+        r = self.session.get(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_folder_path(remote_path)}"
+                             f"?{urlencode(json_)}")
         if r.status_code >= 300 or r.headers['Content-Type'] != 'application/json':
             recursive = False
 
@@ -425,8 +426,8 @@ class API:
             return r, result
 
     @request
-    def filer_download_folder(self, full_remote_path: str, local_folder_path: str, recursive: bool, nthreads=10):
-        _, listing = self.filer_get_folder_listing(full_remote_path, recursive)
+    def filer_download_folder(self, remote_path: str, local_folder_path: str, recursive: bool, nthreads=10):
+        _, listing = self.filer_get_folder_listing(remote_path, recursive)
 
         futures = list()
         results = list()
@@ -442,44 +443,44 @@ class API:
         return results
 
     @request
-    def filer_delete_folder(self, full_remote_path): # recursive by default
-        self._filer_set_json_header(self._check_filer_folder_path(full_remote_path), {})
-        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer")
+    def filer_delete_folder(self, remote_path): # recursive by default
+        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_folder_path(remote_path)}")
         return r
 
     @request
-    def filer_set_file_lock(self, full_remote_path):
-        self._filer_set_json_header(self._check_filer_file_path(full_remote_path), {'tagging': ''})
-        r = self.session.put(f"{self.protocol}://{self.host}/api/filer", headers={'Seaweed-lock': self.client_id})
+    def filer_set_file_lock(self, remote_path):
+        r = self.session.put(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_folder_path(remote_path)}"
+                             f"?tagging",
+                             headers={'Seaweed-lock': self.client_id})
         return r
 
     @request
-    def filer_get_file_lock(self, full_remote_path):
-        self._filer_set_json_header(self._check_filer_file_path(full_remote_path), {'tagging': ''})
-        r = self.session.head(f"{self.protocol}://{self.host}/api/filer")
+    def filer_get_file_lock(self, remote_path):
+        r = self.session.head(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_folder_path(remote_path)}"
+                              f"?tagging")
         return r, r.headers.get('Seaweed-lock', '')
 
     @request
-    def filer_remove_file_tags(self, full_remote_path):
-        self._filer_set_json_header(self._check_filer_file_path(full_remote_path), {'tagging': ''})
-        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer")
+    def filer_remove_file_tags(self, remote_path):
+        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_folder_path(remote_path)}"
+                                f"?tagging")
         return r
 
     @request
-    def filer_set_file_md5_tag(self, full_remote_path, md5_hash):
-        self._filer_set_json_header(self._check_filer_file_path(f'{full_remote_path}.delta.v1'), {'tagging': '', 'meta': ''})
-        r = self.session.put(f"{self.protocol}://{self.host}/api/filer", headers={'Seaweed-md5': md5_hash})
+    def filer_set_file_md5_tag(self, remote_path, md5_hash):
+        r = self.session.put(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_folder_path(remote_path)}"
+                             f".delta.v1?tagging&meta=1",
+                             headers={'Seaweed-md5': md5_hash})
         return r
 
     @request
-    def filer_get_file_md5_tag(self, full_remote_path):
-        self._filer_set_json_header(self._check_filer_file_path(f'{full_remote_path}.delta.v1'), {'tagging': ''})
-        r = self.session.head(f"{self.protocol}://{self.host}/api/filer")
+    def filer_get_file_md5_tag(self, remote_path):
+        r = self.session.head(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_folder_path(remote_path)}"
+                              f".delta.v1?tagging&meta=1")
         return r, r.headers.get('Seaweed-md5', '')
 
     @request
-    def downgrade_file_to_version(self, version, full_remote_path):
-        self._filer_set_json_header(self._check_filer_file_path(full_remote_path), {})
+    def downgrade_file_to_version(self, version, remote_path):
         r = self.session.post(f"{self.protocol}://{self.host}/api/downgrade_to",
-                              json={'version': version, 'rel_path': full_remote_path})
+                              json={'version': version, 'rel_path': self._check_filer_file_path(remote_path)})
         return r
