@@ -1,8 +1,11 @@
+import atexit
 import concurrent.futures
 import mimetypes
 import os
+import pickle
 from base64 import b64encode
 from concurrent.futures.thread import ThreadPoolExecutor
+from http.cookiejar import LWPCookieJar
 from json import dumps as json_dumps
 from pathlib import Path
 from threading import Thread
@@ -16,7 +19,6 @@ from simplejson.errors import JSONDecodeError
 from websocket import create_connection as ws_create_connection, _exceptions as ws_exceptions
 
 from src.sync import Sync
-
 
 class ThreadWithReturnValue(Thread):
     def __init__(self, group=None, target=None, name=None,
@@ -102,9 +104,13 @@ def async_request(func):
 
 
 class API:
-    def __init__(self, host, username, ssl=False):
+    def __init__(self, host, username, base_remote_path, ssl=False):
         bytes_ = (uuid_getnode() + int(time())).to_bytes(8, 'big', signed=False) + bytes(username, encoding='utf-8')
         self.client_id = str(b64encode(bytes_), encoding='utf-8')
+
+        if base_remote_path[-1] != '/':
+            base_remote_path += '/'
+        self.base_remote_path = base_remote_path
 
         self.host = host
         self.session = requests.Session()
@@ -124,6 +130,20 @@ class API:
         self.update_tokens_required = False
         self.login_required = True
 
+        atexit.register(lambda _: self.save_cookies())
+
+    def save_cookies(self):
+        with open('cookies.jar', 'wb') as f:
+            pickle.dump(self.session.cookies, f)
+        with open('cookies_2.jar', 'wb') as f:
+            pickle.dump(self.session.headers['X-Csrf-Token'], f)
+
+    def load_cookies(self):
+        with open('cookies.jar', 'rb') as f:
+            self.session.cookies = pickle.load(f)
+        with open('cookies_2.jar', 'rb') as f:
+            self.session.headers['X-Csrf-Token'] = pickle.load(f)
+
     def register(self, username, password, email):
         reg = {"username": username, "password": password, "email": email}
         r = self.session.post(f"{self.protocol}://{self.host}/api/public/register", json=reg)
@@ -135,6 +155,14 @@ class API:
         return r
 
     def login(self, username, password):
+        try:
+            self.load_cookies()
+            r = self.session.get(f"{self.protocol}://{self.host}/test_login")
+            if r.status_code == 200 and r.text == 'hello':
+                return r
+        except Exception as e:
+            print(e)
+
         reg = {"username": username, "password": password}
         r = self.session.post(f"{self.protocol}://{self.host}/api/public/login", json=reg)
 
@@ -330,7 +358,7 @@ class API:
     # Filer path: '' == '/username'; 'path' == '/username/path'
     def _get_future_results(self, futures, pool, params, retry=True, count=0):
         if count > 0:
-            sleep(5)  # TODO: 2
+            sleep(5)
 
         results = list()
         retry_list = list()
@@ -364,7 +392,7 @@ class API:
         with ThreadPoolExecutor(nthreads) as pool:
             for dir_path, _, filenames in os.walk(full_folder_path):
                 dir_path = dir_path.replace("\\", '/')
-                rel_path = Sync.remove_prefix(dir_path, f"{base_path}/")
+                rel_path = Sync.remove_basepath(dir_path, f"{base_path}/")
                 for file in filenames:
                     futures.append(pool.submit(self.filer_upload_file,
                                                file, dir_path, rel_path, filer_params, remote_filename, read_size))
@@ -400,7 +428,7 @@ class API:
 
         rel_path = self._check_filer_folder_path(rel_path)
         try:
-            return requests.post(f"{self.protocol}://{self.host}/api/filer/{rel_path}{filename}?"
+            return requests.post(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{rel_path}{filename}?"
                                  f"{urlencode(filer_params)}", data=m, headers=headers, cookies=self.session.cookies,
                                  allow_redirects=True)
         except requests.exceptions.ConnectionError:
@@ -415,7 +443,7 @@ class API:
         dir_path = os.path.dirname(filepath)  # full folder path
         base_path = self._check_filer_file_path(base_path) # remove last slash if exists
         if base_path != dir_path:
-            rel_path = Sync.remove_prefix(dir_path, f'{base_path}/') # relative path from cloud root folder
+            rel_path = Sync.remove_basepath(dir_path, f'{base_path}/') + self.base_remote_path # relative path from cloud root folder
         else:
             rel_path = ''
 
@@ -425,7 +453,7 @@ class API:
     def filer_download_file(self, remote_path, local_folder_path, filer_params=None):
         if filer_params is None:
             filer_params = dict()
-        url = f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}" \
+        url = f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}" \
               f"?{urlencode(filer_params)}"
 
         filepath = f'{local_folder_path}/{os.path.basename(remote_path)}'
@@ -444,7 +472,7 @@ class API:
         json_ = {'limit': '100000'} # 'pretty': 'y'
         json_.update(filer_params)
 
-        r = self.session.get(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}"
+        r = self.session.get(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}"
                              f"?{urlencode(json_)}")
         if r.status_code >= 300 or r.headers.get('Content-Type', None) != 'application/json':
             recursive = False
@@ -461,7 +489,7 @@ class API:
         if recursive:
             for entry in entries:
                 if entry['Mode'] > 9999: # is a folder
-                    rpath = Sync.remove_prefix(entry['FullPath'], f'/{self.username}/')
+                    rpath = Sync.remove_prefix(entry['FullPath'], f'/{self.username}/{self.base_remote_path}')
                     self.filer_get_folder_listing(rpath, True, filer_params=filer_params, result=result)
                 # else: # is a file
                 #     if any(s in entry['FullPath'] for s in filter_keys):
@@ -491,66 +519,66 @@ class API:
 
     @request
     def filer_download_zip_folder(self, remote_path, local_folder_path): # recursive by default
-        filepath = f'{local_folder_path}/{os.path.basename(remote_path)}.zip'
+        filepath = f'{local_folder_path}/{self.base_remote_path}{os.path.basename(remote_path)}.zip'
         url = f"{self.protocol}://{self.host}/api/zip/filer/{self._check_filer_file_path(remote_path)}"
         return self._download_file(url, filepath), filepath
 
     @request
     def filer_delete_folder(self, remote_path): # recursive by default
-        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_folder_path(remote_path)}")
+        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_folder_path(remote_path)}")
         return r
 
     @request
     def filer_delete_file(self, remote_path):
-        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}")
+        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}")
         return r
 
     # TODO: rewrite locks logic (put tag on another file)
     @request
     def filer_set_file_lock(self, remote_path):
-        r = self.session.put(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}"
+        r = self.session.put(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}"
                              f"?tagging", headers={'Seaweed-Lock': self.client_id})
         return r
 
     @request
     def filer_get_file_lock(self, remote_path):
-        r = self.session.head(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}"
+        r = self.session.head(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}"
                               f"?tagging")
         return r, r.headers.get('Seaweed-Lock', '')
 
     @request
     def filer_remove_file_lock(self, remote_path):
-        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}"
+        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}"
                                 f"?tagging=Lock")
         return r
 
     @request
     def filer_remove_file_tags(self, remote_path, tag_names):
-        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}"
+        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}"
                                 f"?tagging={','.join([x.capitalize() for x in tag_names])}")
         return r
 
     @request
     def filer_set_file_md5_tag(self, remote_path, md5_hash):
-        r = self.session.put(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}"
+        r = self.session.put(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}"
                              f"?tagging", headers={'Seaweed-md5': md5_hash})
         return r
 
     @request
     def _filer_remove_file_md5_tag(self, remote_path):
-        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}"
+        r = self.session.delete(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}"
                                 f"?tagging=Md5")
         return r
 
     @request
     def version_list(self, remote_path):
-        r = self.session.get(f"{self.protocol}://{self.host}/api/version/{self._check_filer_file_path(remote_path)}")
+        r = self.session.get(f"{self.protocol}://{self.host}/api/version/{self.base_remote_path}{self._check_filer_file_path(remote_path)}")
         return r
 
     @request
     def version_downgrade(self, version, remote_path):
         r = self.session.patch(f"{self.protocol}://{self.host}/api/version",
-                               json={'version': version, 'rel_path': self._check_filer_file_path(remote_path)})
+                               json={'version': version, 'rel_path': f'{self.base_remote_path}{self._check_filer_file_path(remote_path)}'})
         return r
 
     @request

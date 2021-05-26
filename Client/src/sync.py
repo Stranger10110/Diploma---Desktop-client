@@ -22,9 +22,13 @@ class CustomResponse:
 
 
 class Sync:
-    def __init__(self, api, rsync_dll_path):
+    def __init__(self, api, rsync_dll_path, base_remote_path):
         self.API = api
         self.rdiff = Rdiff(rsync_dll_path)
+
+        if base_remote_path[-1] != '/':
+            base_remote_path += '/'
+        self.base_remote_path = base_remote_path
 
         self.temp_dir_prefix = 'Seaweed_Cloud_Storage_'
         self.temp_dir = TemporaryDirectory(prefix=self.temp_dir_prefix)
@@ -106,10 +110,18 @@ class Sync:
             return text[len(prefix):]
         return text  # or whatever
 
+    @staticmethod
+    def remove_basepath(path, basepath):
+        if len(basepath) - len(path) == 1:
+            return ''
+        elif path.startswith(basepath):
+            return path[len(basepath):]
+        return path  # or whatever
+
     def upload_file(self, filepath, full_remote_path, ws, tcp_socket):
         if ws.recv() != 'next':
             return 0
-        ws.send(full_remote_path)
+        ws.send(f'{self.base_remote_path}{full_remote_path}')
         self.send_file(tcp_socket, filepath)
 
         if ws.recv() == 'stop':
@@ -146,7 +158,7 @@ class Sync:
     def sync_folder_listing(self, full_folder_path, base_path, recursive=True):
         base_path = base_path.replace('\\', '/')
         full_folder_path = full_folder_path.replace('\\', '/')
-        rel_path = self.remove_prefix(full_folder_path, f'{base_path}/')
+        rel_path = self.remove_basepath(full_folder_path, f'{base_path}/')
 
         remote_files = dict()
         r, listing = self.API.filer_get_folder_listing(rel_path, recursive=recursive)
@@ -160,16 +172,18 @@ class Sync:
         local_files = set()
         for dir_path, folders, filenames in os.walk(full_folder_path):
             dir_path = dir_path.replace('\\', '/')
-            rel_path = self.remove_prefix(dir_path, f'{base_path}/')
+            rel_path = self.remove_basepath(dir_path, f'{base_path}/')
+            if rel_path != '':
+                rel_path += '/'
             for file in filenames:
-                local_files.add(f'{rel_path}/{file}')
+                local_files.add(f'{self.base_remote_path}{rel_path}{file}')
             if not recursive:
                 break
 
-        local_only = [l for l in local_files if l not in remote_files.keys()]
+        local_only = [self.remove_prefix(l, self.base_remote_path) for l in local_files if l not in remote_files.keys()]
         remote_only = [r for r in remote_files.keys() if r not in local_files]
         # remote_only_entries = [(r, remote_files[r]) for r in remote_only]
-        both = [(path, entry) for path, entry in remote_files.items() if path not in set(remote_only + local_only)]
+        both = [(self.remove_prefix(path, self.base_remote_path), entry) for path, entry in remote_files.items() if path not in set(remote_only + local_only)]
 
         #      response, local paths,             remote paths, remote entries presented locally
         return r,        (base_path, local_only), remote_only,  both
@@ -187,7 +201,7 @@ class Sync:
         # Принимаем сигнатуру
         r, sig_path = self.API.filer_download_file(f'{remote_path}.sig.v', self.temp_dir.name, filer_params={'meta': '1'})
         # Делаем дельту
-        delta_path = f'{self.temp_dir.name}/{remote_path}.delta'
+        delta_path = f'{self.temp_dir.name}/{self.base_remote_path}{remote_path}.delta'
         if self.rdiff.delta(sig_path, filepath, delta_path) != 0:
             return 0
         # Загружаем дельту на сервер
@@ -197,7 +211,7 @@ class Sync:
 
     def _sync_both_file_download(self, filepath, remote_path):
         # Делаем сигнатуру локального файла
-        sig_path = f'{self.temp_dir.name}/{remote_path}.sig'
+        sig_path = f'{self.temp_dir.name}/{self.base_remote_path}{remote_path}.sig'
         self.rdiff.signature(filepath, sig_path)
         # Посылаем на сервер сигнатуру и принимаем дельту
         r, delta_path = self.API.ws_download_new_file_version(sig_path, remote_path, self)
@@ -267,7 +281,7 @@ class Sync:
 
         local_mtime = round(os.path.getmtime(filepath), 0)
         remote_mtime = float(str(remote_meta['chunks'][0]['mtime'])[:10])
-        if local_mtime > remote_mtime + 0.0:  # local_mtime >> remote_mtime // TODO: + 50.0 (temp)
+        if local_mtime > remote_mtime + 60.0:  # local_mtime >> remote_mtime
             if not self._sync_make_version_delta(filepath, remote_path) or not self._sync_both_file_upload(filepath, remote_path):
                 return 0
             print('Success upload!')
@@ -277,7 +291,7 @@ class Sync:
             print('Success download!')
         return 1
 
-    def sync_folder(self, full_folder_path, base_path, recursive=True, nthreads=10, repeat_time=2): # TODO: 2 = 60 (temp)
+    def sync_folder(self, full_folder_path, base_path, recursive=True, nthreads=10, repeat_time=60, repeat=True, repeat_count=3):
         r, local, remote_only, both = self.sync_folder_listing(full_folder_path, base_path, recursive)
         if r.status_code == 404:
             return self.API.filer_upload_folder(full_folder_path, base_path, recursive=recursive, nthreads=nthreads)
@@ -317,11 +331,13 @@ class Sync:
             #             repeat.append()
 
             # TODO: make better repeat
+            c = 0
             sync_both_files()
-            while len(repeat) > 0:
+            while len(repeat) > 0 and repeat and c <= repeat_count:
                 sleep(repeat_time)
                 both = repeat.copy()
                 print(both)
                 sync_both_files()
+                c += 1
 
         return 1
