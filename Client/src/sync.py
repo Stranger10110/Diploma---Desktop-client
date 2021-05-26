@@ -253,27 +253,13 @@ class Sync:
             return True
 
         remote_md5_is_none = remote_meta['Md5'] is None
-        # if remote_md5_is_none:
-        #     if remote_meta['Extended'] is not None and remote_meta['Extended'].get('Seaweed-Md5', None) is not None:
-        #         remote_meta['Md5'] = remote_meta['Extended']['Seaweed-Md5']
-        #         remote_md5_is_none = False
         file_size = os.path.getsize(filepath)
-
-        # def update_remote_md5():
-        #     if remote_md5_is_none:
-        #         if self._chunked_md5_full:
-        #             md5 = b64encode(next(file_md5_generator)).decode(encoding='utf-8')
-        #         else:
-        #             md5 = b64encode(self.md5_whole_file(filepath, bytes_=True)).decode(encoding='utf-8')
-        #         self.API.filer_set_file_md5_tag(remote_path, md5)
-        #         self._chunked_md5_full = False
 
         # if same sizes AND ((remote_md5 != 'None' AND md5s_equal) OR (remote_md5 == 'None' AND chunk's_md5s_equals))
         if file_size == remote_meta['FileSize'] and \
             ((not remote_md5_is_none and self.md5_whole_file(filepath, bytes_=True) == b64decode(remote_meta['Md5']))
                 or (remote_md5_is_none and chunks_md5s_equals())):
             self.API.filer_remove_file_lock(remote_path)
-            # update_remote_md5()
             return 1  # file is already synced
 
         # update_remote_md5()
