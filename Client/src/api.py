@@ -130,18 +130,16 @@ class API:
         self.update_tokens_required = False
         self.login_required = True
 
-        atexit.register(lambda _: self.save_cookies())
-
     def save_cookies(self):
-        with open('cookies.jar', 'wb') as f:
+        with open('./data/cookies', 'wb') as f:
             pickle.dump(self.session.cookies, f)
-        with open('cookies_2.jar', 'wb') as f:
+        with open('./data/cookies_2', 'wb') as f:
             pickle.dump(self.session.headers['X-Csrf-Token'], f)
 
     def load_cookies(self):
-        with open('cookies.jar', 'rb') as f:
+        with open('./data/cookies', 'rb') as f:
             self.session.cookies = pickle.load(f)
-        with open('cookies_2.jar', 'rb') as f:
+        with open('./data/cookies_2', 'rb') as f:
             self.session.headers['X-Csrf-Token'] = pickle.load(f)
 
     def register(self, username, password, email):
@@ -157,7 +155,7 @@ class API:
     def login(self, username, password):
         try:
             self.load_cookies()
-            r = self.session.get(f"{self.protocol}://{self.host}/test_login")
+            r = self.session.get(f"{self.protocol}://{self.host}/secure/test_login")
             if r.status_code == 200 and r.text == 'hello':
                 return r
         except Exception as e:
@@ -171,6 +169,7 @@ class API:
             # self.update_tokens_required = False
             # self.login_required = False
             self.session.headers['X-Csrf-Token'] = r.headers['X-Csrf-Token']
+            self.save_cookies()
 
         return r
 

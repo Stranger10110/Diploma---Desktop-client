@@ -38,6 +38,8 @@ class Sync:
         self._chunked_md5_full = False
         self.clean_temp_dir()
 
+        self._cached_mtimes = {}
+
     @staticmethod
     def silent_remove(filename):
         try:
@@ -155,19 +157,25 @@ class Sync:
             if not recursive:
                 break
 
+    @staticmethod
+    def _get_first_chunk(remote_meta):
+        """ remote_meta['chunks'] are not sorted so we need to do this manually """
+        return next((item for item in remote_meta['chunks'] if item.get('offset', None) is None), None)
+
     def sync_folder_listing(self, full_folder_path, base_path, recursive=True):
         base_path = base_path.replace('\\', '/')
         full_folder_path = full_folder_path.replace('\\', '/')
         rel_path = self.remove_basepath(full_folder_path, f'{base_path}/')
 
-        remote_files = dict()
         r, listing = self.API.filer_get_folder_listing(rel_path, recursive=recursive)
         if r.status_code >= 300:
             return r, tuple(), list(), list()
+
+        remote_files = dict()
         for entry in listing:
             if entry['Mode'] <= 9999:  # is a file
-                rel_path = self.remove_prefix(entry['FullPath'], f'/{self.API.username}/')
-                remote_files[rel_path] = entry
+                rel_path_ = self.remove_prefix(entry['FullPath'], f'/{self.API.username}/')
+                remote_files[rel_path_] = entry
 
         local_files = set()
         for dir_path, folders, filenames in os.walk(full_folder_path):
@@ -175,15 +183,28 @@ class Sync:
             rel_path = self.remove_basepath(dir_path, f'{base_path}/')
             if rel_path != '':
                 rel_path += '/'
-            for file in filenames:
+            for file in [x for x in filenames if '~$' not in x]: # filter temp files '~$'
                 local_files.add(f'{self.base_remote_path}{rel_path}{file}')
             if not recursive:
                 break
 
         local_only = [self.remove_prefix(l, self.base_remote_path) for l in local_files if l not in remote_files.keys()]
         remote_only = [r for r in remote_files.keys() if r not in local_files]
-        # remote_only_entries = [(r, remote_files[r]) for r in remote_only]
-        both = [(self.remove_prefix(path, self.base_remote_path), entry) for path, entry in remote_files.items() if path not in set(remote_only + local_only)]
+
+        both = [(self.remove_prefix(path, self.base_remote_path), entry) for path, entry in remote_files.items()
+                if (path not in set(remote_only + local_only))
+                and ((self._cached_mtimes.get(path, (0, 0))[0] !=
+                      round(os.path.getmtime(f'{base_path}/{self.remove_prefix(path, self.base_remote_path)}'), 0))
+                     or (self._cached_mtimes.get(path, (0, 0))[1] != self._get_first_chunk(entry)['mtime']))]
+        # if path not in 'only' AND
+        # (cached_local_mtime != current_local_mtime OR cached_remote_mtime != current_remote_mtime)
+
+        # Cache local and remote mtime
+        for path, entry in both:
+            self._cached_mtimes[f'{self.base_remote_path}{path}'] = (
+                round(os.path.getmtime(f'{base_path}/{path}'), 0),
+                self._get_first_chunk(entry)['mtime']
+            )
 
         #      response, local paths,             remote paths, remote entries presented locally
         return r,        (base_path, local_only), remote_only,  both
@@ -222,26 +243,28 @@ class Sync:
         if self.rdiff.patch(filepath, delta_path, new_filepath) != 0:
             return 0
         # Удаляем старый файл и переименовываем новый
-        shutil.move(new_filepath, filepath)
+        try:
+            shutil.move(new_filepath, filepath)
+        except PermissionError:
+            pass
         return 1
 
-    def sync_both_file(self, filepath, remote_path, remote_meta):
-        # self.API._filer_remove_file_md5_tag(remote_path)
-        # self.API.filer_remove_file_lock(remote_path)
+    def sync_both_file(self, filepath, rel_path, remote_meta):
+        # self.API._filer_remove_file_md5_tag(rel_path)
+        # self.API.filer_remove_file_lock(rel_path)
 
         # Check file lock
-        if self.API.filer_get_file_lock(remote_path)[1] not in ('', self.API.client_id):
+        if self.API.filer_get_file_lock(rel_path)[1] not in ('', self.API.client_id):
             return 0
 
         # Set file lock
-        self.API.filer_set_file_lock(remote_path)
-        if self.API.filer_get_file_lock(remote_path)[1] != self.API.client_id:
-            self.API.filer_remove_file_lock(remote_path)
+        self.API.filer_set_file_lock(rel_path)
+        if self.API.filer_get_file_lock(rel_path)[1] != self.API.client_id:
+            self.API.filer_remove_file_lock(rel_path)
             return 0
 
-        file_md5_generator = self.md5_file_generator(
-            filepath, size=next((item['size'] for item in remote_meta['chunks'] if item.get('offset', None) is None), None)
-        )
+        first_remote_chunk = self._get_first_chunk(remote_meta)
+        file_md5_generator = self.md5_file_generator(filepath, size=first_remote_chunk['size'])
 
         def chunks_md5s_equals():
             for remote_chunk in sorted(remote_meta['chunks'], key=lambda x: x.get('offset', 0)):
@@ -259,20 +282,20 @@ class Sync:
         if file_size == remote_meta['FileSize'] and \
             ((not remote_md5_is_none and self.md5_whole_file(filepath, bytes_=True) == b64decode(remote_meta['Md5']))
                 or (remote_md5_is_none and chunks_md5s_equals())):
-            self.API.filer_remove_file_lock(remote_path)
+            self.API.filer_remove_file_lock(rel_path)
             return 1  # file is already synced
 
         # update_remote_md5()
         file_md5_generator.close()
 
         local_mtime = round(os.path.getmtime(filepath), 0)
-        remote_mtime = float(str(remote_meta['chunks'][0]['mtime'])[:10])
+        remote_mtime = float(str(first_remote_chunk['mtime'])[:10])
         if local_mtime > remote_mtime + 60.0:  # local_mtime >> remote_mtime
-            if not self._sync_make_version_delta(filepath, remote_path) or not self._sync_both_file_upload(filepath, remote_path):
+            if not self._sync_make_version_delta(filepath, rel_path) or not self._sync_both_file_upload(filepath, rel_path):
                 return 0
             print('Success upload!')
         else:
-            if not self._sync_both_file_download(filepath, remote_path):
+            if not self._sync_both_file_download(filepath, rel_path):
                 return 0
             print('Success download!')
         return 1
@@ -297,33 +320,25 @@ class Sync:
             for _ in concurrent.futures.as_completed(futures):
                 pass
 
-            if len(both) > 0:
-                def sync_both_files():
-                    for b in both:
-                        remote_path, remote_meta = b  # remote_path == rel_path
-                        if not self.sync_both_file(f'{base_path}/{remote_path}', remote_path, remote_meta):
-                            repeat.append(b)
-                        # lock is removed on a server side
-            else:
-                return 1
+        if len(both) > 0:
+            def sync_both_files():
+                for b in both:
+                    rel_path, remote_meta = b  # rel_path == rel_path
+                    if not self.sync_both_file(f'{base_path}/{rel_path}', rel_path, remote_meta):
+                        repeat.append(b)
+                    # lock is removed on a server side
+        else:
+            return 1
 
-            # def sync_both_files():
-            #     for b in both:
-            #         remote_path, remote_meta = b  # remote_path == rel_path
-            #         futures.append(pool.submit(self.sync_both_file, f'{base_path}/{remote_path}', remote_path, remote_meta))
-            #
-            #     for future in concurrent.futures.as_completed(futures):
-            #         if not future.result():
-            #             repeat.append()
-
-            # TODO: make better repeat
-            c = 0
+        # TODO: make better repeat
+        c = 0
+        print('both')
+        sync_both_files()
+        while len(repeat) > 0 and repeat and c <= repeat_count:
+            sleep(repeat_time)
+            both = repeat.copy()
+            print(both)
             sync_both_files()
-            while len(repeat) > 0 and repeat and c <= repeat_count:
-                sleep(repeat_time)
-                both = repeat.copy()
-                print(both)
-                sync_both_files()
-                c += 1
+            c += 1
 
         return 1

@@ -1,19 +1,47 @@
+import atexit
 from pprint import pprint
 from time import time, sleep
+import schedule
 
 from src.api import API
 from src.sync import Sync
 
 
-def test_upload(api, sync):
+# TODO: client settings
+# TODO: save tokens to file
+
+class Client:
+    def __init__(self, user, host, base_local_folder, base_remote_folder, ssl=False):
+        self.base_local_folder = base_local_folder
+
+        self.api = API(host, user['username'], base_remote_folder, ssl=ssl)
+        self.sync = Sync(self.api, './src/rsync', base_remote_folder)
+
+        self.user = user
+        atexit.register(self.sync_folder, repeat=True)
+
+    def login(self):
+        r = self.api.login(self.user['username'], self.user['password'])
+        if r.status_code != 200:
+            print(f"Can't login {r.status_code} {r.text}")
+            return 0
+        return 1
+
+    def sync_folder(self, repeat=False):
+        print(f"Syncing {self.base_local_folder}")
+        self.sync.sync_folder(self.base_local_folder, self.base_local_folder, nthreads=1, repeat=repeat)
+
+
+def test_upload(api):
     """
         WS: --- Run time: ~20 seconds ---
         HTTP: --- Run time: ~11 seconds ---
     """
-    api.filer_delete_folder("Platform_designer_lab")
+    if api.filer_delete_folder("Platform_designer_lab").status_code >= 300:
+        print('delete error')
     start_time = time()
     results = api.filer_upload_folder(r"C:\Content\VUS\Efremov\TA\3_4_kurs\Platform_designer_lab",
-                            r"C:\Content\VUS\Efremov\TA\3_4_kurs", recursive=True)
+                            r"C:\Content\VUS\Efremov\TA\3_4_kurs", recursive=True, retry=False)
     print(results)
     print("\n\n--- Run time: %s seconds ---\n\n" % (round(time() - start_time, 5)))
 
@@ -30,12 +58,13 @@ def test_locks(api, full_remote_path):
     api.filer_set_file_lock(full_remote_path)
     _, lock = api.filer_get_file_lock(full_remote_path)
     print(lock)
-    api.filer_remove_file_tags(full_remote_path)
+    api.filer_remove_file_tag(full_remote_path)
 
 
-def main():
+def main1():
     user = {"username": "test2", "password": "4321", "email": "test2_email"}
-    host = "192.168.0.2:8080"
+    host = "192.168.0.2"
+    # host = "localhost"
     api = API(host, user['username'], ssl=False)
     sync = Sync(api, './src/rsync')
 
@@ -48,63 +77,85 @@ def main():
         print(f"Can't login {r.status_code} {r.text}")
         return
 
-    # api.filer_delete_folder("Platform_designer_lab")
-    # test_upload(api, sync)
-    # sync.sync_folder(r"C:\Content\VUS\Efremov\TA\3_4_kurs\Platform_designer_lab",
-    #                  r"C:\Content\VUS\Efremov\TA\3_4_kurs")
+    # if api.filer_delete_folder("Platform_designer_lab").status_code >= 300:
+    #     print('delete error')
 
-    # print(api.filer_remove_file_tags("Platform_designer_lab/заметки.txt"))
-    pprint(api.filer_get_folder_listing("Platform_designer_lab", False, {'namePattern': 'заметки*'}))
-    # api.filer_remove_file_tags("Platform_designer_lab/заметки.txt")
+    # test_upload(api)
+    # api.filer_remove_file_lock('Platform_designer_lab/Platform_designer_lab.docx')
+    # print(sync.sync_folder(r"C:\Content\VUS\Efremov\TA\3_4_kurs\Platform_designer_lab",
+    #                        r"C:\Content\VUS\Efremov\TA\3_4_kurs", nthreads=10))
+    # api.filer_delete_file("local.docx")
+    # api.filer_delete_folder("Test")
 
-    # print(api.filer_remove_file_lock('Platform_designer_lab/заметки.txt'))
-    # print(api.downgrade_file_to_version(-1, 'Platform_designer_lab/заметки.txt').text)
+    # print(api.filer_download_folder('Platform_designer_lab', './Test', True, nthreads=10))
+    # pprint(api.filer_get_folder_listing("Platform_designer_lab", False, {'namePattern': 'заметки*'}))
+
+    # print(api.version_downgrade(-1, 'Platform_designer_lab.docx').text)
+    # print(api.version_list('Platform_designer_lab.docx').text)
+
+    # r = api.filer_get_folder_listing("Platform_designer_lab/", recursive=False)
+    # pprint(r)
+    # print(api.filer_delete_file('Platform_designer_lab/ссылки.txt'))
 
     # print(API.hello_word().text)
 
     # print(API.download_public_shared_file("253c5bbe220c9bc39e630b4ec61670fca", r"C:\Users\Nikita\Desktop\VHDL.pptx"))
 
-    # test_upload(API)
     # pprint(sync.sync_folder_listing(r"C:\Content\VUS\Efremov\TA\3_4_kurs\Platform_designer_lab",
     #                                 r"C:\Content\VUS\Efremov\TA\3_4_kurs"))
-    # test_locks(API, 'Platform_designer_lab/Platform_designer_lab.pdf')
 
-    # print(API.filer_upload_file_2(r"C:\Content\VUS\Efremov\TA\3_4_kurs\Platform_designer_lab\test.pdf",
-    #                               r"C:\Content\VUS\Efremov\TA\3_4_kurs", {'op': 'append'},
-    #                               remote_filename='Platform_designer_lab.pdf'))
-    # print(API.filer_upload_file_2(r"C:\Content\VUS\Diploma\GUI\test_data\hello.docx",
-    #                               r"C:\Content\VUS\Diploma\GUI\test_data", {}))
+    # print(api.filer_upload_file_2(r"C:\Content\VUS\Diploma\GUI\test_data\hello.docx",
+    #                               r"C:\Content\VUS\Diploma\GUI\test_data", {}, remote_filename='test2/hello.docx'))
 
-    # print(api.filer_download_file('Platform_designer_lab/заметки.txt', '.').text)
+    # print(api.filer_download_file('Platform_designer_lab/Platform_designer_lab.docx', '.')[0].text)
 
     # API.filer_download_folder('', '..', recursive=True)
 
-    #     # file1 = r"H:\Downloads\KINGSTON\KINGSTON\Quartus_Desktop\MILI\MILI_Scheme.bdf"
-    #     # print(API.sync_files(folder1).text)
-    #
-    #     # 253c5bbe220c9bc39e630b4ec61670fca
-    #     file1 = {'path': 'Quartus_Desktop/VHDL.pptx', 'exp_time': '0', 'type': 'pub',
-    #              'link_hash': '253c5bbe220c9bc39e630b4ec61670fca'}
-    #
-    #     # 1c55bed5427e543a5444a000ab2f9f5ab
-    #     file2 = {'path': 'MILI/cache.zip', 'exp_time': '0', 'type': 'grp_test_group',
-    #              'link_hash': "47f6e09ed92bc7585d88f66d96a72a5fb"}
-    #
-    #     print(API.create_shared_link(file2).text)
+    file3 = {'path': 'Platform_designer_lab/Platform_designer_lab.pdf', 'exp_time': '0', 'type': 'group_testing', 'permission': 'r'}
+    # print(api.share_create_link(file3).text)
+    # print(api.share_remove_link({'path': file3['path'], 'link': ""}))
+
+    folder = {'path': 'Platform_designer_lab/', 'exp_time': '0', 'type': 'group_testing', 'permission': 'rw'}
+    # print(api.share_create_link(folder).text)
+    # print(api.share_remove_link({'path': file3['path'], 'link': "6be975ba69ead63571b0cedab70fbad9b"}))
+
+    # api.filer_download_zip_folder("Platform_designer_lab", '.')
+    # print(api.admin_set_group_for_user("test2", "testing"))
 
 
 def main2():
-    import sys
+    # import sys
     import logging
-    from watchdog.observers import Observer
     from watchdog.events import LoggingEventHandler
+    from watchdog.events import FileSystemEventHandler
+    from watchdog.observers import Observer
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    class MyEventHandler(FileSystemEventHandler):
+        def catch_all_handler(self, event):
+            logging.debug(event)
+
+        def on_moved(self, event):
+            self.catch_all_handler(event)
+
+        def on_created(self, event):
+            self.catch_all_handler(event)
+
+        def on_deleted(self, event):
+            self.catch_all_handler(event)
+
+        def on_modified(self, event):
+            print('heelo')
+            self.catch_all_handler(event)
+
 
     if __name__ == "__main__":
         logging.basicConfig(level=logging.INFO,
                             format='%(asctime)s - %(message)s',
                             datefmt='%Y-%m-%d %H:%M:%S')
-        path = r"D:\Lab_1" # sys.argv[1] if len(sys.argv) > 1 else '.'
-        event_handler = LoggingEventHandler()
+        path = r"C:\Content\VUS\Python" # sys.argv[1] if len(sys.argv) > 1 else '.'
+        event_handler = MyEventHandler() # LoggingEventHandler()
         observer = Observer()
         observer.schedule(event_handler, path, recursive=True)
         observer.start()
@@ -114,6 +165,34 @@ def main2():
         except KeyboardInterrupt:
             observer.stop()
         observer.join()
+
+
+def main():
+    user = {"username": "test2", "password": "4321", "email": "test2_email"}
+    # host = "192.168.0.2"
+    host = "localhost"
+    to_sync = {
+        r"D:\tests\Lab_1": 'base_1',
+        r"D:\tests\uchebnaya": 'base_2'
+    }
+
+    # TODO: filter to not sync temp files by name
+    for base, remote in to_sync.items():
+        client = Client(user, host, base, remote)
+        if not client.login():
+            return
+        client.sync_folder(repeat=True)
+        schedule.every(8).to(16).seconds.do(client.sync_folder)
+
+    while 1:
+        n = schedule.idle_seconds()
+        if n is None:
+            # no more jobs
+            break
+        elif n > 0:
+            # sleep exactly the right amount of time
+            sleep(n)
+        schedule.run_pending()
 
 
 if __name__ == '__main__':
