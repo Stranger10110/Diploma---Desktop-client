@@ -53,8 +53,8 @@ class Console:
     user = {'username': '', 'password': ''}
     host = ''
 
-    def __init__(self):
-        atexit.register(self.save_settings)
+    # def __init__(self):
+    #     atexit.register(self.save_settings)
 
     def save_settings(self):
         with open('./data/settings.json', 'w') as file:
@@ -95,18 +95,27 @@ class Console:
             Screen().input("Нужно задать настройки! Нажмите [Enter], чтобы вернуться...")
             return
 
+        logins = 0
         for base, remote in self.to_sync.items():
             client = Client(self.user, self.host, base, remote)
             login = client.login()
-            if not login and retry:
-                Screen().input("Введите [Enter], чтобы вернуться...")
-                return
-            elif not login:
-                self.user['username'] = input('\nВведите логин: ')
+
+            if not login:
+                if self.user['username'] == '':
+                    self.user['username'] = input('\nВведите логин: ')
                 self.user['password'] = getpass('Введите пароль: ')
-                self.client_syncing(retry=True)
+                login = client.login()
+                if not login:
+                    continue
+
+            self.save_settings()
             client.sync_folder(repeat=True)
-            schedule.every(8).to(16).seconds.do(client.sync_folder) # TODO change to minutes
+            schedule.every(8).to(16).seconds.do(client.sync_folder)  # TODO change to minutes
+            logins += 1
+
+        if not logins:
+            Screen().input("Введите [Enter], чтобы вернуться...")
+            return
 
         while 1:
             n = schedule.idle_seconds()
@@ -182,6 +191,9 @@ class Console:
         settings_submenu.append_item(item)
 
         self.load_settings(folders_menu, item)
+        if self.user['username'] == '':
+            self.user['username'] = input('\nВведите логин: ')
+        self.save_settings()
 
         # Add all the items to the root menu
         menu.append_item(FunctionItem("Запустить синхронизацию", self.client_syncing))

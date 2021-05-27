@@ -4,14 +4,27 @@ import hashlib
 import os
 import shutil
 import struct
+import time
 from base64 import b64decode
 from concurrent.futures.thread import ThreadPoolExecutor
 from errno import ENOENT
 from shutil import rmtree
 from tempfile import TemporaryDirectory, gettempdir
+from threading import Thread
 from time import sleep
 
 from src.rdiff import Rdiff
+
+
+def start_thread(target, *args, **kwargs):
+    thread = Thread(
+        target=target,
+        args=args,
+        kwargs=kwargs,
+        daemon=True
+    )
+    thread.start()
+    return thread
 
 
 class CustomResponse:
@@ -26,7 +39,7 @@ class Sync:
         self.API = api
         self.rdiff = Rdiff(rsync_dll_path)
 
-        if base_remote_path[-1] != '/':
+        if len(base_remote_path) > 0 and base_remote_path[-1] != '/':
             base_remote_path += '/'
         self.base_remote_path = base_remote_path
 
@@ -38,7 +51,34 @@ class Sync:
         self._chunked_md5_full = False
         self.clean_temp_dir()
 
-        self._cached_mtimes = {}
+        self._last_mtimes = dict()
+        self._cached_os_walk = dict()
+        self._cached_remote_listing = dict()
+
+    @staticmethod
+    def is_locked(filepath):
+        """Checks if a file is locked by opening it in append mode.
+        If no exception thrown, then the file is not locked.
+        """
+        locked = None
+        file_object = None
+        try:
+            # Opening file in append mode and read the first 8 characters.
+            file_object = open(filepath, 'a', buffering=8)
+            if file_object:
+                locked = False
+        except IOError:
+            locked = True
+        finally:
+            if file_object:
+                file_object.close()
+        return locked
+
+    def wait_for_file(self, filepath):
+        c = 0
+        while self.is_locked(filepath) or c <= 3:
+            time.sleep(0.7)
+            c += 1
 
     @staticmethod
     def silent_remove(filename):
@@ -162,6 +202,10 @@ class Sync:
         """ remote_meta['chunks'] are not sorted so we need to do this manually """
         return next((item for item in remote_meta['chunks'] if item.get('offset', None) is None), None)
 
+    @staticmethod
+    def _get_local_mtime(path):
+        return round(os.path.getmtime(path), 0)
+
     def sync_folder_listing(self, full_folder_path, base_path, recursive=True):
         base_path = base_path.replace('\\', '/')
         full_folder_path = full_folder_path.replace('\\', '/')
@@ -193,17 +237,16 @@ class Sync:
 
         both = [(self.remove_prefix(path, self.base_remote_path), entry) for path, entry in remote_files.items()
                 if (path not in set(remote_only + local_only))
-                and ((self._cached_mtimes.get(path, (0, 0))[0] !=
-                      round(os.path.getmtime(f'{base_path}/{self.remove_prefix(path, self.base_remote_path)}'), 0))
-                     or (self._cached_mtimes.get(path, (0, 0))[1] != self._get_first_chunk(entry)['mtime']))]
+                and ((self._last_mtimes.get(path, (0, 0))[0] !=
+                      self._get_local_mtime(f'{base_path}/{self.remove_prefix(path, self.base_remote_path)}'))
+                     or (self._last_mtimes.get(path, (0, 0))[1] != entry['mtime']))]
         # if path not in 'only' AND
-        # (cached_local_mtime != current_local_mtime OR cached_remote_mtime != current_remote_mtime)
+        # (last_local_mtime != current_local_mtime OR last_remote_mtime != current_remote_mtime)
 
-        # Cache local and remote mtime
+        # Set last local and remote mtime
         for path, entry in both:
-            self._cached_mtimes[f'{self.base_remote_path}{path}'] = (
-                round(os.path.getmtime(f'{base_path}/{path}'), 0),
-                self._get_first_chunk(entry)['mtime']
+            self._last_mtimes[f'{self.base_remote_path}{path}'] = (
+                self._get_local_mtime(f'{base_path}/{path}'), entry['mtime']
             )
 
         #      response, local paths,             remote paths, remote entries presented locally
@@ -263,8 +306,7 @@ class Sync:
             self.API.filer_remove_file_lock(rel_path)
             return 0
 
-        first_remote_chunk = self._get_first_chunk(remote_meta)
-        file_md5_generator = self.md5_file_generator(filepath, size=first_remote_chunk['size'])
+        file_md5_generator = self.md5_file_generator(filepath, size=self._get_first_chunk(remote_meta)['size'])
 
         def chunks_md5s_equals():
             for remote_chunk in sorted(remote_meta['chunks'], key=lambda x: x.get('offset', 0)):
@@ -285,11 +327,10 @@ class Sync:
             self.API.filer_remove_file_lock(rel_path)
             return 1  # file is already synced
 
-        # update_remote_md5()
         file_md5_generator.close()
 
-        local_mtime = round(os.path.getmtime(filepath), 0)
-        remote_mtime = float(str(first_remote_chunk['mtime'])[:10])
+        local_mtime = self._get_local_mtime(filepath)
+        remote_mtime = float(remote_meta['mtime'])
         if local_mtime > remote_mtime + 60.0:  # local_mtime >> remote_mtime
             if not self._sync_make_version_delta(filepath, rel_path) or not self._sync_both_file_upload(filepath, rel_path):
                 return 0

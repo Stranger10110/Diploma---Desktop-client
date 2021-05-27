@@ -1,5 +1,6 @@
 import atexit
 import concurrent.futures
+import json
 import mimetypes
 import os
 import pickle
@@ -19,6 +20,7 @@ from simplejson.errors import JSONDecodeError
 from websocket import create_connection as ws_create_connection, _exceptions as ws_exceptions
 
 from src.sync import Sync
+
 
 class ThreadWithReturnValue(Thread):
     def __init__(self, group=None, target=None, name=None,
@@ -108,7 +110,7 @@ class API:
         bytes_ = (uuid_getnode() + int(time())).to_bytes(8, 'big', signed=False) + bytes(username, encoding='utf-8')
         self.client_id = str(b64encode(bytes_), encoding='utf-8')
 
-        if base_remote_path[-1] != '/':
+        if len(base_remote_path) > 0 and base_remote_path[-1] != '/':
             base_remote_path += '/'
         self.base_remote_path = base_remote_path
 
@@ -157,8 +159,13 @@ class API:
             self.load_cookies()
             r = self.session.get(f"{self.protocol}://{self.host}/secure/test_login")
             if r.status_code == 200 and r.text == 'hello':
+                self.session.headers['X-Csrf-Token'] = r.headers['X-Csrf-Token']
+                self.save_cookies()
                 return r
-        except Exception as e:
+            else:
+                Sync.silent_remove('./data/cookies')
+                Sync.silent_remove('./data/cookies_2')
+        except FileNotFoundError as e:
             print(e)
 
         reg = {"username": username, "password": password}
@@ -471,8 +478,8 @@ class API:
         json_ = {'limit': '100000'} # 'pretty': 'y'
         json_.update(filer_params)
 
-        r = self.session.get(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}"
-                             f"?{urlencode(json_)}")
+        r = self.session.get(f"{self.protocol}://{self.host}/api/filer/"
+                             f"{self.base_remote_path}{self._check_filer_folder_path(remote_path)}?{urlencode(json_)}")
         if r.status_code >= 300 or r.headers.get('Content-Type', None) != 'application/json':
             recursive = False
 
