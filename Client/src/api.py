@@ -151,7 +151,7 @@ class API:
 
     def confirm_user(self, username, code):
         confirm = {"username": username, 'code': code}
-        r = self.session.post(f"{self.protocol}://{self.host}/api/public/confirm_username", json=confirm)
+        r = self.session.patch(f"{self.protocol}://{self.host}/api/public/username", json=confirm)
         return r
 
     def login(self, username, password):
@@ -343,12 +343,12 @@ class API:
 
     @request
     def share_create_link(self, file: dict):
-        r = self.session.put(f"{self.protocol}://{self.host}/api/shared_link", json=file)
+        r = self.session.put(f"{self.protocol}://{self.host}/api/shared/link", json=file)
         return r
 
     @request
     def share_remove_link(self, file: dict):
-        r = self.session.delete(f"{self.protocol}://{self.host}/api/shared_link", json=file)
+        r = self.session.delete(f"{self.protocol}://{self.host}/api/shared/link", json=file)
         return r
 
     @request
@@ -526,7 +526,7 @@ class API:
     @request
     def filer_download_zip_folder(self, remote_path, local_folder_path): # recursive by default
         filepath = f'{local_folder_path}/{self.base_remote_path}{os.path.basename(remote_path)}.zip'
-        url = f"{self.protocol}://{self.host}/api/zip/filer/{self._check_filer_file_path(remote_path)}"
+        url = f"{self.protocol}://{self.host}/api/zip/{self._check_filer_file_path(remote_path)}"
         return self._download_file(url, filepath), filepath
 
     @request
