@@ -74,11 +74,19 @@ class Sync:
                 file_object.close()
         return locked
 
-    def wait_for_file(self, filepath):
+    def wait_for_file_3_times(self, filepath):
         c = 0
-        while self.is_locked(filepath) or c <= 3:
+        while self.is_locked(filepath) and c <= 3:
             time.sleep(0.7)
             c += 1
+
+        if c >= 3:
+            return 0
+        return 1
+
+    def wait_for_file_endlessly(self, filepath):
+        while self.is_locked(filepath):
+            time.sleep(0.7)
 
     @staticmethod
     def silent_remove(filename):
@@ -106,9 +114,8 @@ class Sync:
         else:
             return hash_md5.digest()
 
-    @staticmethod
-    def md5_file_generator(filename, size=1_048_576):
-        with open(filename, "rb") as fi:
+    def md5_file_generator(self, filepath, size=1_048_576):
+        with open(filepath, "rb") as fi:
             fsize = os.fstat(fi.fileno()).st_size
             if fsize < size:
                 size = fsize
@@ -239,14 +246,15 @@ class Sync:
                 if (path not in set(remote_only + local_only))
                 and ((self._last_mtimes.get(path, (0, 0))[0] !=
                       self._get_local_mtime(f'{base_path}/{self.remove_prefix(path, self.base_remote_path)}'))
-                     or (self._last_mtimes.get(path, (0, 0))[1] != entry['mtime']))]
+                     or (self._last_mtimes.get(path, (0, 0))[1] != self._get_first_chunk(entry)['mtime']))]
         # if path not in 'only' AND
         # (last_local_mtime != current_local_mtime OR last_remote_mtime != current_remote_mtime)
 
         # Set last local and remote mtime
         for path, entry in both:
             self._last_mtimes[f'{self.base_remote_path}{path}'] = (
-                self._get_local_mtime(f'{base_path}/{path}'), entry['mtime']
+                self._get_local_mtime(f'{base_path}/{path}'),
+                self._get_first_chunk(entry)['mtime']
             )
 
         #      response, local paths,             remote paths, remote entries presented locally
@@ -263,7 +271,8 @@ class Sync:
 
     def _sync_both_file_upload(self, filepath, remote_path):
         # Принимаем сигнатуру
-        r, sig_path = self.API.filer_download_file(f'{remote_path}.sig.v', self.temp_dir.name, filer_params={'meta': '1'})
+        r, sig_path = self.API.filer_download_file(f'{self.base_remote_path}{remote_path}.sig.v',
+                                                   self.temp_dir.name, filer_params={'meta': '1'})
         # Делаем дельту
         delta_path = f'{self.temp_dir.name}/{self.base_remote_path}{remote_path}.delta'
         if self.rdiff.delta(sig_path, filepath, delta_path) != 0:
@@ -283,6 +292,8 @@ class Sync:
             return 0
         # Применяем дельту на локальном файле
         new_filepath = f'{self.temp_dir.name}/{remote_path}_2'
+        if not self.wait_for_file_3_times(filepath):
+            return 0
         if self.rdiff.patch(filepath, delta_path, new_filepath) != 0:
             return 0
         # Удаляем старый файл и переименовываем новый
@@ -294,7 +305,7 @@ class Sync:
 
     def sync_both_file(self, filepath, rel_path, remote_meta):
         # self.API._filer_remove_file_md5_tag(rel_path)
-        # self.API.filer_remove_file_lock(rel_path)
+        self.API.filer_remove_file_lock(rel_path)
 
         # Check file lock
         if self.API.filer_get_file_lock(rel_path)[1] not in ('', self.API.client_id):
@@ -306,7 +317,9 @@ class Sync:
             self.API.filer_remove_file_lock(rel_path)
             return 0
 
-        file_md5_generator = self.md5_file_generator(filepath, size=self._get_first_chunk(remote_meta)['size'])
+        first_remote_chunk = self._get_first_chunk(remote_meta)
+        self.wait_for_file_3_times(filepath)
+        file_md5_generator = self.md5_file_generator(filepath, size=first_remote_chunk['size'])
 
         def chunks_md5s_equals():
             for remote_chunk in sorted(remote_meta['chunks'], key=lambda x: x.get('offset', 0)):
@@ -330,15 +343,16 @@ class Sync:
         file_md5_generator.close()
 
         local_mtime = self._get_local_mtime(filepath)
-        remote_mtime = float(remote_meta['mtime'])
-        if local_mtime > remote_mtime + 60.0:  # local_mtime >> remote_mtime
+        remote_mtime = float(str(first_remote_chunk['mtime'])[:10])
+        print(f"Синхронизация {filepath}...")
+        if local_mtime > remote_mtime:
             if not self._sync_make_version_delta(filepath, rel_path) or not self._sync_both_file_upload(filepath, rel_path):
                 return 0
-            print('Success upload!')
+            print('Успешная загрузка!')
         else:
             if not self._sync_both_file_download(filepath, rel_path):
                 return 0
-            print('Success download!')
+            print('Успешное скачивание!')
         return 1
 
     def sync_folder(self, full_folder_path, base_path, recursive=True, nthreads=10, repeat_time=60, repeat=True, repeat_count=3):
@@ -349,15 +363,17 @@ class Sync:
             return 0
 
         base_path, local_only = local
-        repeat = list()
+        repeat_list = list()
         futures = list()
 
         # Upload local_only/download remote_only files
         with ThreadPoolExecutor(nthreads) as pool:
             for l in local_only:
+                print(f"Загрузка {base_path}/{l}")
                 futures.append(pool.submit(self.API.filer_upload_file_2, f'{base_path}/{l}', base_path))
             for r in remote_only:
-                futures.append(pool.submit(self.API.filer_download_file, r, base_path))
+                print(f"Скачивание {base_path}/{r}")
+                futures.append(pool.submit(self.API.filer_download_file, self.remove_basepath(r, base_path), base_path))
             for _ in concurrent.futures.as_completed(futures):
                 pass
 
@@ -366,20 +382,21 @@ class Sync:
                 for b in both:
                     rel_path, remote_meta = b  # rel_path == rel_path
                     if not self.sync_both_file(f'{base_path}/{rel_path}', rel_path, remote_meta):
-                        repeat.append(b)
+                        repeat_list.append(b)
                     # lock is removed on a server side
         else:
+            print()
             return 1
 
         # TODO: make better repeat
         c = 0
-        print('both')
         sync_both_files()
-        while len(repeat) > 0 and repeat and c <= repeat_count:
+        while len(repeat_list) > 0 and repeat and c <= repeat_count:
             sleep(repeat_time)
-            both = repeat.copy()
-            print(both)
+            both = repeat_list.copy()
+            repeat_list = list()
             sync_both_files()
             c += 1
 
+        print()
         return 1

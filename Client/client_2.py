@@ -3,6 +3,7 @@ import json
 import time
 from datetime import datetime
 from getpass import getpass
+from os import makedirs
 from tkinter import Tk, filedialog
 
 import schedule
@@ -10,7 +11,7 @@ from consolemenu import *
 from consolemenu.format import *
 from consolemenu.items import *
 from consolemenu.menu_component import Dimension
-from pyfiglet import Figlet
+# from pyfiglet import Figlet
 
 from src.api import API
 from src.sync import Sync
@@ -21,10 +22,10 @@ class Client:
         self.base_local_folder = base_local_folder
 
         self.api = API(host, user['username'], base_remote_folder, ssl=ssl)
-        self.sync = Sync(self.api, './src/rsync', base_remote_folder)
+        self.sync = Sync(self.api, './rsync', base_remote_folder)
 
         self.user = user
-        atexit.register(self.sync_folder, repeat=True)
+        atexit.register(self.sync_folder, repeat=False, repeat_time=0)
 
     def login(self):
         r = self.api.login(self.user['username'], self.user['password'])
@@ -33,9 +34,9 @@ class Client:
             return 0
         return 1
 
-    def sync_folder(self, repeat=False):
-        print(f'{datetime.now().strftime("%d.%m.%Y %H:%M")} | Синхронизация {self.base_local_folder}')
-        self.sync.sync_folder(self.base_local_folder, self.base_local_folder, nthreads=1, repeat=repeat)
+    def sync_folder(self, repeat, repeat_time):
+        print(f'{datetime.now().strftime("%d.%m.%Y %H:%M")} | Синхронизация папки {self.base_local_folder}')
+        self.sync.sync_folder(self.base_local_folder, self.base_local_folder, nthreads=10, repeat=repeat, repeat_time=repeat_time) # TODO: change nthreads
 
 
 class Console:
@@ -57,6 +58,7 @@ class Console:
     #     atexit.register(self.save_settings)
 
     def save_settings(self):
+        makedirs('./data', exist_ok=True)
         with open('./data/settings.json', 'w') as file:
             json.dump({'folders': self.to_sync, 'host': self.host, 'username': self.user['username']}, file)
 
@@ -72,7 +74,7 @@ class Console:
                 folders_menu.append_item(item)
 
             self.host = settings['host']
-            host_item.text = f"IP адрес сервера (текущий '{self.host}')"
+            host_item.text = f"Адрес сервера (текущий '{self.host}')"
 
             self.user['username'] = settings['username']
         except FileNotFoundError:
@@ -82,7 +84,8 @@ class Console:
         except json.decoder.JSONDecodeError:
             pass
 
-    def client_syncing(self, retry=False):
+    # TODO: change time
+    def client_syncing(self, repeat=True, repeat_time=12):
         # user = {"username": "test2", "password": "4321", "email": "test2_email"}
         # host = "192.168.0.2"
         # host = "localhost"
@@ -94,6 +97,8 @@ class Console:
         if len(self.to_sync) == 0 or self.host == '':
             Screen().input("Нужно задать настройки! Нажмите [Enter], чтобы вернуться...")
             return
+
+        self.save_settings()
 
         logins = 0
         for base, remote in self.to_sync.items():
@@ -109,8 +114,8 @@ class Console:
                     continue
 
             self.save_settings()
-            client.sync_folder(repeat=True)
-            schedule.every(8).to(16).seconds.do(client.sync_folder)  # TODO change to minutes
+            client.sync_folder(repeat, repeat_time)
+            schedule.every(8).to(16).seconds.do(client.sync_folder, repeat, repeat_time)  # TODO change to minutes
             logins += 1
 
         if not logins:
@@ -125,7 +130,7 @@ class Console:
             elif n > 0:
                 # sleep exactly the right amount of time
                 time.sleep(n)
-            schedule.run_pending()
+            schedule.run_pending() # TODO: change time
 
     def set_ip_address(self, menu_item):
         ip = input("Введите IP адрес сервера (ip:port): ")
@@ -164,36 +169,36 @@ class Console:
         self.to_sync[local] = remote
 
     def run(self):
-        f = Figlet(font='slant')
-        print(f.renderText('Filer'))
-        time.sleep(0.4)
+        # f = Figlet(font='slant')
+        # print(f.renderText('Filer'))
+        # time.sleep(0.4)
 
         menu = ConsoleMenu("Filer", "Приложение для синхронизации файлов с облачным сервером",
                            formatter=self.menu_format, exit_option_text="Выйти")
 
         settings_submenu = ConsoleMenu("Настройки", "", formatter=self.menu_format, show_exit_option=False)
-        settings_submenu.append_item(SelectionItem("Вернуться", 1))
+        settings_submenu.append_item(SelectionItem("Назад", 1))
 
         item_1 = SubmenuItem("Настройки", submenu=settings_submenu)
         item_1.set_menu(menu)
 
         folders_menu = ConsoleMenu("Синхронизируемые папки",
-                                   "Один пункт меню - это путь локальной папки и соотвествующий путь на сервере",
+                                   "(нажмите на уже добавленную папку, чтобы изменить её)",
                                    formatter=self.menu_format, show_exit_option=False)
-        folders_menu.append_item(SelectionItem("Вернуться", 1))
+        folders_menu.append_item(SelectionItem("Назад", 1))
         folders_menu.append_item(FunctionItem("Добавить папку", self.add_sync_folder, args=(folders_menu,)))
         item_2 = SubmenuItem("Папки", submenu=folders_menu)
         item_2.set_menu(settings_submenu)
 
         settings_submenu.append_item(item_2)
-        item = FunctionItem(f"IP адрес сервера (текущий '{self.host}')", self.set_ip_address)
+        item = FunctionItem(f"Адрес сервера (текущий '{self.host}')", self.set_ip_address)
         item.args = (item,)
         settings_submenu.append_item(item)
 
         self.load_settings(folders_menu, item)
-        if self.user['username'] == '':
-            self.user['username'] = input('\nВведите логин: ')
-        self.save_settings()
+        # if self.user['username'] == '':
+        #     self.user['username'] = input('\n   Filer\nВведите логин: ')
+        # self.save_settings()
 
         # Add all the items to the root menu
         menu.append_item(FunctionItem("Запустить синхронизацию", self.client_syncing))

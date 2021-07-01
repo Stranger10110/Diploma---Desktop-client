@@ -23,13 +23,16 @@ class Rdiff:
         self.rsync.rdiff_set_params(c_int(0), c_int(0), c_int(1), c_int(1))
 
     def signature(self, filepath, sig_path, sig_mode='wb'):
-        basis_file = open(filepath, 'rb')
-        basis_fd = basis_file.fileno()
+        try:
+            basis_file = open(filepath, 'rb')
+            basis_fd = basis_file.fileno()
 
-        Path(os.path.dirname(sig_path)).mkdir(parents=True, exist_ok=True)
-        sig_file = open(sig_path, sig_mode)
-        sig_fd = sig_file.fileno()
-        sig_mode_ = bytes(sig_mode, encoding=getdefaultencoding())
+            Path(os.path.dirname(sig_path)).mkdir(parents=True, exist_ok=True)
+            sig_file = open(sig_path, sig_mode)
+            sig_fd = sig_file.fileno()
+            sig_mode_ = bytes(sig_mode, encoding=getdefaultencoding())
+        except IOError:
+            return 3
 
         res = self.rsync.rdiff_sig(basis_fd, sig_fd, sig_mode_)
         if res != 0:
@@ -38,16 +41,19 @@ class Rdiff:
         return res
 
     def delta(self, sig_path, new_filepath, delta_path, delta_mode='wb'):
-        sig_file = open(sig_path, 'rb')
-        sig_fd = sig_file.fileno()
+        try:
+            sig_file = open(sig_path, 'rb')
+            sig_fd = sig_file.fileno()
 
-        new_file = open(new_filepath, 'rb')
-        new_fd = new_file.fileno()
+            new_file = open(new_filepath, 'rb')
+            new_fd = new_file.fileno()
 
-        Path(os.path.dirname(delta_path)).mkdir(parents=True, exist_ok=True)
-        delta_file = open(delta_path, delta_mode)
-        delta_fd = delta_file.fileno()
-        delta_mode_ = bytes(delta_mode, encoding=getdefaultencoding())
+            Path(os.path.dirname(delta_path)).mkdir(parents=True, exist_ok=True)
+            delta_file = open(delta_path, delta_mode)
+            delta_fd = delta_file.fileno()
+            delta_mode_ = bytes(delta_mode, encoding=getdefaultencoding())
+        except IOError:
+            return 3
 
         res = self.rsync.rdiff_delta(sig_fd, new_fd, delta_fd, delta_mode_)
         if res != 0:
@@ -57,16 +63,19 @@ class Rdiff:
         return res
 
     def patch(self, filepath, delta_path, new_filepath, new_mode='wb'):
-        basis_file = open(filepath, 'rb')
-        basis_fd = basis_file.fileno()
+        try:
+            basis_file = open(filepath, 'rb')
+            basis_fd = basis_file.fileno()
 
-        delta_file = open(delta_path, 'rb')
-        delta_fd = delta_file.fileno()
+            delta_file = open(delta_path, 'rb')
+            delta_fd = delta_file.fileno()
 
-        Path(os.path.dirname(new_filepath)).mkdir(parents=True, exist_ok=True)
-        new_file = open(new_filepath, new_mode)
-        new_fd = new_file.fileno()
-        new_mode_ = bytes(new_mode, encoding=getdefaultencoding())
+            Path(os.path.dirname(new_filepath)).mkdir(parents=True, exist_ok=True)
+            new_file = open(new_filepath, new_mode)
+            new_fd = new_file.fileno()
+            new_mode_ = bytes(new_mode, encoding=getdefaultencoding())
+        except IOError:
+            return 3
 
         res = self.rsync.rdiff_patch(basis_fd, delta_fd, new_fd, new_mode_)
         if res != 0:

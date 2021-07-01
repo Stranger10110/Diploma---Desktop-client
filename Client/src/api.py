@@ -1,14 +1,12 @@
-import atexit
 import concurrent.futures
-import json
 import mimetypes
 import os
 import pickle
 from base64 import b64encode
 from concurrent.futures.thread import ThreadPoolExecutor
-from http.cookiejar import LWPCookieJar
 from json import dumps as json_dumps
 from pathlib import Path
+from sys import exit
 from threading import Thread
 from time import time as current_time, time, sleep
 from urllib.parse import urlencode
@@ -74,14 +72,26 @@ def request2(func):
 
 # decorator
 def request(func):
+    def delete_cookies():
+        print("Ошибка! Нет авторизации!")
+        Sync.silent_remove('./data/cookies')
+        Sync.silent_remove('./data/cookies_2')
+        input("Необходимо перезапустить приложение. Нажмите Enter, чтобы продолжить...")
+        exit(0)
+
     def wrapper(self, *args, **kwargs):
         r = func(self, *args, **kwargs)
+
         if isinstance(r, tuple) or isinstance(r, list):
-            if r[0] is not None and r[0].headers.get('X-Refresh-Token', None) is not None:
+            if r[0].headers is not None and r[0].headers.get('X-Csrf-Token', None) is not None:
                 self.session.headers['X-Csrf-Token'] = r[0].headers['X-Csrf-Token']
+            # if r[0].status_code in (401, '401'):
+            #     delete_cookies()
         else:
-            if r is not None and r.headers.get('X-Refresh-Token', None) is not None:
+            if r.headers is not None and r.headers.get('X-Csrf-Token', None) is not None:
                 self.session.headers['X-Csrf-Token'] = r.headers['X-Csrf-Token']
+            # if r.status_code in (401, '401'):
+            #     delete_cookies()
         return r
 
     return wrapper
@@ -165,8 +175,8 @@ class API:
             else:
                 Sync.silent_remove('./data/cookies')
                 Sync.silent_remove('./data/cookies_2')
-        except FileNotFoundError as e:
-            print(e)
+        except FileNotFoundError:
+            pass
 
         reg = {"username": username, "password": password}
         r = self.session.post(f"{self.protocol}://{self.host}/api/public/login", json=reg)
@@ -303,7 +313,7 @@ class API:
     def ws_make_version_delta(self, filepath, remote_path, sync_obj: Sync):
         ws, tcp_socket, ok = self._ws_make_connection('api/make_version_delta')
         if not ok:
-            return CustomResponse(ws.status, "Could not create ws socket!", ws.headers)
+            return CustomResponse(ws.status_code, "Could not create ws socket!", ws.headers)
 
         if sync_obj.upload_file(filepath, remote_path, ws, tcp_socket):
             if ws.recv() == 'stop':
@@ -351,15 +361,15 @@ class API:
         r = self.session.delete(f"{self.protocol}://{self.host}/api/shared/link", json=file)
         return r
 
-    @request
-    def share_download_public_file(self, link, filename):
-        url = f"{self.protocol}://{self.host}/share/{link}"
-        return self._download_file(url, filename)
-
-    @request
-    def share_download_secured_file(self, link, filename):
-        url = f"{self.protocol}://{self.host}/secure/share/{link}"
-        return self._download_file(url, filename)
+    # @request
+    # def share_download_public_file(self, link, filepath):
+    #     url = f"{self.protocol}://{self.host}/shared/{link}"
+    #     return self._download_file(url, filepath)
+    #
+    # @request
+    # def share_download_secured_file(self, link, filepath):
+    #     url = f"{self.protocol}://{self.host}/secure/shared/{link}"
+    #     return self._download_file(url, filepath)
 
     # Filer path: '' == '/username'; 'path' == '/username/path'
     def _get_future_results(self, futures, pool, params, retry=True, count=0):
@@ -423,8 +433,9 @@ class API:
             filename = remote_filename
         filename = self._check_filer_file_path(filename)
 
-        mimetype = mimetypes.guess_type(filepath)[0] or '' # TODO: make docx mime shorter
-        m = MultipartEncoder(fields={'file': (filename, open(filepath, 'rb'), mimetype)})
+        file_handle = open(filepath, 'rb')
+        mimetype = mimetypes.guess_type(filepath)[0] or ''
+        m = MultipartEncoder(fields={'file': (filename, file_handle, mimetype)})
         m._read = m.read
         m.read = lambda size: m._read(read_size if filesize >= read_size else filesize)
 
@@ -434,10 +445,13 @@ class API:
 
         rel_path = self._check_filer_folder_path(rel_path)
         try:
-            return requests.post(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{rel_path}{filename}?"
+            resp = requests.post(f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{rel_path}{filename}?"
                                  f"{urlencode(filer_params)}", data=m, headers=headers, cookies=self.session.cookies,
                                  allow_redirects=True)
+            file_handle.close()
+            return resp
         except requests.exceptions.ConnectionError:
+            file_handle.close()
             return CustomResponse(400, filepath, {})
 
     def filer_upload_file_2(self, filepath, base_path, filer_params=None, remote_filename=None, read_size=3_145_728):
@@ -449,7 +463,7 @@ class API:
         dir_path = os.path.dirname(filepath)  # full folder path
         base_path = self._check_filer_file_path(base_path) # remove last slash if exists
         if base_path != dir_path:
-            rel_path = Sync.remove_basepath(dir_path, f'{base_path}/') + self.base_remote_path # relative path from cloud root folder
+            rel_path = Sync.remove_basepath(dir_path, f'{base_path}/') # relative path from cloud root folder
         else:
             rel_path = ''
 
@@ -459,7 +473,7 @@ class API:
     def filer_download_file(self, remote_path, local_folder_path, filer_params=None):
         if filer_params is None:
             filer_params = dict()
-        url = f"{self.protocol}://{self.host}/api/filer/{self.base_remote_path}{self._check_filer_file_path(remote_path)}" \
+        url = f"{self.protocol}://{self.host}/api/filer/{self._check_filer_file_path(remote_path)}" \
               f"?{urlencode(filer_params)}"
 
         filepath = f'{local_folder_path}/{os.path.basename(remote_path)}'
@@ -496,7 +510,8 @@ class API:
             for entry in entries:
                 if entry['Mode'] > 9999: # is a folder
                     rpath = Sync.remove_prefix(entry['FullPath'], f'/{self.username}/{self.base_remote_path}')
-                    self.filer_get_folder_listing(rpath, True, filer_params=filer_params, result=result)
+                    r2, _ = self.filer_get_folder_listing(rpath, True, filer_params=filer_params, result=result)
+                    r.status_code = r2.status_code
                 # else: # is a file
                 #     if any(s in entry['FullPath'] for s in filter_keys):
                 #     # del entry[i]

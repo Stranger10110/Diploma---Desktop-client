@@ -140,7 +140,7 @@ class SyncFolder:
         with open(filename, 'rb', buffering=buffer_size) as file:
             step = int(filesize / n_slices) + 1
             print(step)
-            self.current_file_upload_progress = None# tqdm.tqdm(range(filesize), f"Sending {filename}", unit="B",
+            self.current_file_upload_progress = None# tqdm.tqdm(range(filesize), f"Sending {filepath}", unit="B",
                                                 #          unit_scale=True, unit_divisor=1024, smoothing=0.0)
             for i in range(n_slices):
                 if i != n_slices - 1:

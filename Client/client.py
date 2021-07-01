@@ -61,21 +61,25 @@ def test_locks(api, full_remote_path):
     api.filer_remove_file_tag(full_remote_path)
 
 
-def main1():
+def main():
     user = {"username": "test2", "password": "4321", "email": "test2_email"}
+    user2 = {"username": "test3", "password": "54321", "email": "test3_email"}
+    user3 = {"username": "test4", "password": "54321", "email": "test4_email"}
     host = "192.168.0.2"
     # host = "localhost"
-    api = API(host, user['username'], ssl=False)
-    sync = Sync(api, './src/rsync')
+    api = API(host, user['username'], '', ssl=False)
+    sync = Sync(api, './rsync', '')
 
-    # print(API.register(*user.values()).text)
-    # print(API.confirm_user(user['username'], 'ebioovumogubigefumab').text)
+    # print(api.register(*user3.values()).text)
+    # print(api.confirm_user(user3['username'], 'uparoueeiaeeooaaieao').text)
     # return
 
-    r = api.login(user['username'], user['password'])
-    if r.status_code != 200:
-        print(f"Can't login {r.status_code} {r.text}")
-        return
+    # r = api.login(user['username'], user['password'])
+    # if r.status_code != 200:
+    #     print(f"Can't login {r.status_code} {r.text}")
+    #     return
+
+    # api.ws_meta_subscribe_update('/' + api.username + '/' + 'base_1' + '/')
 
     # if api.filer_delete_folder("Platform_designer_lab").status_code >= 300:
     #     print('delete error')
@@ -167,7 +171,7 @@ def main2():
         observer.join()
 
 
-def main():
+def main22():
     user = {"username": "test2", "password": "4321", "email": "test2_email"}
     # host = "192.168.0.2"
     host = "localhost"
